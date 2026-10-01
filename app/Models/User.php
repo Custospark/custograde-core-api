@@ -7,6 +7,7 @@ use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -134,5 +135,52 @@ class User extends Authenticatable
     public function responsibleForCourseUnits(): BelongsToMany
     {
         return $this->courseUnits()->wherePivot('is_responsible', true);
+    }
+
+    /**
+     * Examinations this user owns directly, which is only ever populated for a
+     * personal account.
+     *
+     * Owned and institutional papers are separate relations rather than one
+     * union because the two tenancy branches are genuinely different (ADR-002):
+     * a personal user owns their rows, an institutional user inherits the whole
+     * institution's. Callers that need both should ask the scope, not a union
+     * that quietly assumes the current user is one kind of account.
+     */
+    public function ownedExams(): HasMany
+    {
+        return $this->hasMany(Exam::class, 'owner_user_id');
+    }
+
+    public function institutionExams(): HasMany
+    {
+        return $this->hasMany(Exam::class, 'institution_id');
+    }
+
+    public function ownedStudents(): HasMany
+    {
+        return $this->hasMany(Student::class, 'owner_user_id');
+    }
+
+    public function institutionStudents(): HasMany
+    {
+        return $this->hasMany(Student::class, 'institution_id');
+    }
+
+    /**
+     * Answers this user has approved. Naming a person is what makes a mark
+     * decided under BR-02, so this is the trail of who actually marked.
+     */
+    public function markedAnswers(): HasMany
+    {
+        return $this->hasMany(ScriptAnswer::class, 'approved_by');
+    }
+
+    /**
+     * Scripts this user locked.
+     */
+    public function lockedScripts(): HasMany
+    {
+        return $this->hasMany(Script::class, 'locked_by');
     }
 }

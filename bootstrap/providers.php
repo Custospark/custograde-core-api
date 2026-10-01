@@ -7,6 +7,7 @@ use App\Providers\AuthServiceProvider;
 use App\Providers\CourseResourceServiceProvider;
 use App\Providers\CourseUnitServiceProvider;
 use App\Providers\GradingSchemeServiceProvider;
+use App\Providers\MarkingServiceProvider;
 use App\Providers\TermServiceProvider;
 
 return [
@@ -20,4 +21,5 @@ return [
     CourseUnitServiceProvider::class,
     CourseResourceServiceProvider::class,
     GradingSchemeServiceProvider::class,
+    MarkingServiceProvider::class,
 ];
