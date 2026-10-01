@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Institution;
 use App\Models\User;
 use App\Models\VerificationCode;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -14,11 +15,21 @@ class AuthTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * The suite runs with AUTH_REQUIRE_EMAIL_VERIFICATION off. Tests that
+     * exercise the code challenge switch it on explicitly.
+     */
+    protected function enableEmailVerification(): void
+    {
+        config(['auth.require_email_verification' => true]);
+    }
+
     protected function registerPayload(array $overrides = []): array
     {
         return array_merge([
-            'admin_first_name' => 'Ada',
-            'admin_last_name' => 'Admin',
+            'account_type' => User::ACCOUNT_TYPE_INSTITUTIONAL,
+            'first_name' => 'Ada',
+            'last_name' => 'Admin',
             'institution_name' => 'Test Secondary School',
             'institution_type' => 'Secondary School',
             'email' => 'admin@test.school',
@@ -31,6 +42,8 @@ class AuthTest extends TestCase
 
     protected function registerVerifiedUser(string $email = 'admin@test.school'): User
     {
+        $this->enableEmailVerification();
+
         Mail::fake();
         $this->postJson('/api/v1/auth/register', $this->registerPayload(['email' => $email]))
             ->assertCreated();
@@ -58,18 +71,34 @@ class AuthTest extends TestCase
 
     public function test_register_creates_institution_and_admin_and_requires_verification(): void
     {
+        $this->enableEmailVerification();
         Mail::fake();
 
         $response = $this->postJson('/api/v1/auth/register', $this->registerPayload());
 
         $response->assertCreated()
             ->assertJsonPath('requires_email_verification', true)
+            ->assertJsonPath('token', null)
             ->assertJsonPath('email', 'admin@test.school')
+            ->assertJsonPath('user.role', 'institution_admin')
+            ->assertJsonPath('user.account_type', 'institutional')
+            ->assertJsonPath('user.institution.name', 'Test Secondary School')
             ->assertJsonStructure(['user' => ['id', 'name', 'email', 'role', 'institution']]);
 
         $this->assertDatabaseHas('institutions', ['name' => 'Test Secondary School']);
-        $this->assertDatabaseHas('users', ['email' => 'admin@test.school', 'role' => 'institution_admin']);
+        $this->assertDatabaseHas('users', [
+            'email' => 'admin@test.school',
+            'role' => 'institution_admin',
+            'account_type' => 'institutional',
+        ]);
         $this->assertDatabaseHas('verification_codes', ['email' => 'admin@test.school']);
+
+        // The institution owner is back-linked to the registering admin.
+        $institution = Institution::where('email', 'admin@test.school')->firstOrFail();
+        $this->assertSame(
+            User::where('email', 'admin@test.school')->firstOrFail()->id,
+            $institution->owner_id
+        );
     }
 
     public function test_register_rejects_duplicate_email_and_missing_consent(): void
@@ -89,6 +118,7 @@ class AuthTest extends TestCase
 
     public function test_login_blocked_until_email_verified_then_succeeds(): void
     {
+        $this->enableEmailVerification();
         Mail::fake();
         $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertCreated();
 
@@ -113,6 +143,7 @@ class AuthTest extends TestCase
 
     public function test_verify_with_wrong_code_fails(): void
     {
+        $this->enableEmailVerification();
         Mail::fake();
         $this->postJson('/api/v1/auth/register', $this->registerPayload())->assertCreated();
 

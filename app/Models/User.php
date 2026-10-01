@@ -34,6 +34,37 @@ class User extends Authenticatable
     ];
 
     /**
+     * Account types a user can register with.
+     *
+     * `personal` is an individual teacher with no institution: institution_id
+     * stays NULL and the user scopes their own records (AUT-06).
+     * `institutional` is a staff member of a school, university or exam body
+     * and is always attached to an institution row.
+     */
+    public const ACCOUNT_TYPE_PERSONAL = 'personal';
+
+    public const ACCOUNT_TYPE_INSTITUTIONAL = 'institutional';
+
+    /**
+     * @var list<string>
+     */
+    public const ACCOUNT_TYPES = [
+        self::ACCOUNT_TYPE_PERSONAL,
+        self::ACCOUNT_TYPE_INSTITUTIONAL,
+    ];
+
+    /**
+     * Role granted on self-registration, per account type. Personal users are
+     * teachers by definition; institutional registrants administer the tenant.
+     *
+     * @var array<string, string>
+     */
+    public const ROLE_FOR_ACCOUNT_TYPE = [
+        self::ACCOUNT_TYPE_PERSONAL => 'teacher',
+        self::ACCOUNT_TYPE_INSTITUTIONAL => 'institution_admin',
+    ];
+
+    /**
      * The attributes that are mass assignable.
      *
      * @var list<string>
@@ -43,6 +74,7 @@ class User extends Authenticatable
         'email',
         'password',
         'institution_id',
+        'account_type',
         'role',
         'phone',
         'is_active',
@@ -75,5 +107,13 @@ class User extends Authenticatable
     public function institution(): BelongsTo
     {
         return $this->belongsTo(Institution::class);
+    }
+
+    /**
+     * A personal account has no institution and is its own tenant (AUT-06).
+     */
+    public function isPersonal(): bool
+    {
+        return $this->account_type === self::ACCOUNT_TYPE_PERSONAL;
     }
 }

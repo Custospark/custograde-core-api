@@ -16,13 +16,23 @@ class AuthService implements AuthServiceInterface
     public const CODE_TTL_MINUTES = 15;
 
     /**
+     * Whether new accounts must confirm their email address before signing in.
+     */
+    public function requiresEmailVerification(): bool
+    {
+        return (bool) config('auth.require_email_verification', false);
+    }
+
+    /**
      * @param array<string, mixed> $data
      * @return array{user: User, email: string}
      */
-    public function registerInstitution(array $data): array
+    public function register(array $data): array
     {
         return DB::transaction(function () use ($data) {
-            $institution = Institution::create([
+            $isPersonal = $data['account_type'] === User::ACCOUNT_TYPE_PERSONAL;
+
+            $institution = $isPersonal ? null : Institution::create([
                 'name' => $data['institution_name'],
                 'type' => $data['institution_type'],
                 'email' => $data['email'],
@@ -31,18 +41,21 @@ class AuthService implements AuthServiceInterface
             ]);
 
             $user = User::create([
-                'name' => trim($data['admin_first_name'] . ' ' . $data['admin_last_name']),
+                'name' => trim($data['first_name'].' '.$data['last_name']),
                 'email' => $data['email'],
                 'password' => $data['password'],
-                'institution_id' => $institution->id,
-                'role' => 'institution_admin',
+                'institution_id' => $institution?->id,
+                'account_type' => $data['account_type'],
+                'role' => User::ROLE_FOR_ACCOUNT_TYPE[$data['account_type']],
                 'phone' => $data['phone'] ?? null,
                 'is_active' => true,
             ]);
 
-            $institution->update(['owner_id' => $user->id]);
+            $institution?->update(['owner_id' => $user->id]);
 
-            $this->sendCode($user->email, VerificationCode::PURPOSE_EMAIL_VERIFICATION);
+            if ($this->requiresEmailVerification()) {
+                $this->sendCode($user->email, VerificationCode::PURPOSE_EMAIL_VERIFICATION);
+            }
 
             return ['user' => $user->load('institution'), 'email' => $user->email];
         });
@@ -71,6 +84,12 @@ class AuthService implements AuthServiceInterface
 
     public function issueVerificationCode(string $email, string $purpose): bool
     {
+        // No code is ever issued while verification is switched off, so the
+        // endpoint must not appear to succeed.
+        if ($purpose === VerificationCode::PURPOSE_EMAIL_VERIFICATION && ! $this->requiresEmailVerification()) {
+            return false;
+        }
+
         $user = User::where('email', $email)->first();
         if (! $user) {
             return false;

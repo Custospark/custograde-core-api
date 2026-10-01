@@ -114,4 +114,19 @@ return [
 
     'password_timeout' => env('AUTH_PASSWORD_TIMEOUT', 10800),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Email Verification
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, registration issues a six-digit code and refuses to hand out
+    | a token until the address is confirmed. When disabled, registration signs
+    | the user straight in and no code is issued. The endpoints stay registered
+    | either way, so the flag can be flipped without a migration or redeploy of
+    | the routes.
+    |
+    */
+
+    'require_email_verification' => env('AUTH_REQUIRE_EMAIL_VERIFICATION', false),
+
 ];

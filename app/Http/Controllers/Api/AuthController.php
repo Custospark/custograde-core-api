@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\ForgotPasswordRequest;
 use App\Http\Requests\LoginRequest;
-use App\Http\Requests\RegisterInstitutionRequest;
+use App\Http\Requests\RegisterRequest;
 use App\Http\Requests\ResetPasswordRequest;
 use App\Http\Requests\SendVerificationCodeRequest;
 use App\Http\Requests\VerifyCodeRequest;
@@ -22,14 +22,18 @@ class AuthController extends Controller
         protected AuthServiceInterface $authService,
     ) {}
 
-    public function register(RegisterInstitutionRequest $request): JsonResponse
+    public function register(RegisterRequest $request): JsonResponse
     {
-        $result = $this->authService->registerInstitution($request->validated());
+        $result = $this->authService->register($request->validated());
+        $requiresVerification = $this->authService->requiresEmailVerification();
 
         return response()->json([
             'user' => new UserResource($result['user']),
-            'requires_email_verification' => true,
+            'requires_email_verification' => $requiresVerification,
             'email' => $result['email'],
+            // Present only when verification is off, so the client can sign in
+            // immediately instead of routing to the code screen.
+            'token' => $requiresVerification ? null : $this->authService->authToken($result['user']),
         ], 201);
     }
 
@@ -45,7 +49,7 @@ class AuthController extends Controller
             return response()->json(['message' => 'Your account has been deactivated.'], 403);
         }
 
-        if (! $user->email_verified_at) {
+        if ($this->authService->requiresEmailVerification() && ! $user->email_verified_at) {
             $this->authService->issueVerificationCode(
                 $user->email,
                 VerificationCode::PURPOSE_EMAIL_VERIFICATION
@@ -66,6 +70,15 @@ class AuthController extends Controller
 
     public function sendVerificationCode(SendVerificationCodeRequest $request): JsonResponse
     {
+        if (
+            $request->purpose === VerificationCode::PURPOSE_EMAIL_VERIFICATION
+            && ! $this->authService->requiresEmailVerification()
+        ) {
+            return response()->json([
+                'message' => 'Email verification is not enabled on this installation.',
+            ], 422);
+        }
+
         $sent = $this->authService->issueVerificationCode($request->email, $request->purpose);
 
         if (! $sent) {
