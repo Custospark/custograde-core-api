@@ -13,5 +13,5 @@ Route::prefix('v1')->group(function () {
     });
 
     // Domain route files (same pattern as Custosell):
-    // require __DIR__ . '/api/v1/<entity>.php';
+    require __DIR__ . '/api/v1/auth.php';
 });
