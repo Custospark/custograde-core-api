@@ -6,6 +6,7 @@ namespace App\Models;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -115,5 +116,23 @@ class User extends Authenticatable
     public function isPersonal(): bool
     {
         return $this->account_type === self::ACCOUNT_TYPE_PERSONAL;
+    }
+
+    /**
+     * Courses this user teaches or is responsible for (ACD-04).
+     */
+    public function courseUnits(): BelongsToMany
+    {
+        return $this->belongsToMany(CourseUnit::class, 'course_unit_teachers')
+            ->withPivot('is_responsible')
+            ->withTimestamps();
+    }
+
+    /**
+     * Courses where this user is the accountable lecturer.
+     */
+    public function responsibleForCourseUnits(): BelongsToMany
+    {
+        return $this->courseUnits()->wherePivot('is_responsible', true);
     }
 }

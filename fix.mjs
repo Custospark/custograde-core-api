@@ -1,0 +1,4 @@
+fixed tests/Feature/AcademicCalendarTest.php AcademicCalendarTest
+fixed tests/Feature/AcademicUnitStructureTest.php AcademicUnitStructureTest
+fixed tests/Feature/CourseUnitTest.php CourseUnitTest
+fixed tests/Feature/GradingSchemeTest.php GradingSchemeTest
