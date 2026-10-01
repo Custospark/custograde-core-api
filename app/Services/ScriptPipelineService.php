@@ -128,7 +128,7 @@ class ScriptPipelineService implements ScriptPipelineServiceContract
 
         $read = 0;
 
-        DB::transaction(function () use ($script, $questions, $byNumber, $result): void {
+        DB::transaction(function () use ($script, $questions, $byNumber, $result, &$read): void {
             foreach ($questions as $question) {
                 $number = (int) $question->number;
                 $reading = $byNumber[$number] ?? null;

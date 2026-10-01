@@ -15,4 +15,7 @@ Route::prefix('v1')->group(function () {
     // Domain route files (same pattern as Custosell):
     require __DIR__ . '/api/v1/auth.php';
     require __DIR__ . '/api/v1/academic.php';
+    // Papers, questions and the roster: EXM-01, EXM-02, EXM-03, EXM-06, STU-01, STU-03.
+    require __DIR__ . '/api/v1/examinations.php';
+    require __DIR__ . '/api/v1/marking.php';
 });

@@ -1,0 +1,252 @@
+<?php
+
+namespace App\Services;
+
+use App\Jobs\ProcessScriptJob;
+use App\Models\Exam;
+use App\Models\Script;
+use App\Models\Student;
+use App\Models\User;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
+
+/**
+ * Capturing a scanned script (CAP-01, CAP-07, CAP-08, IDN-02).
+ *
+ * Two things matter here beyond storing a file.
+ *
+ * The original is written once and hashed (CAP-07, ARC-05). Nothing in the
+ * application ever writes back over it, which is what makes it evidence.
+ *
+ * A capture is attributed to a person and a moment, so a paper that later turns
+ * out to belong to someone else can be traced. For now the student is chosen by
+ * the operator rather than decoded from a QR code, because identification
+ * (IDN-02) is still OpenCV work. A script with no student is kept and flagged
+ * rather than refused, because refusing it would lose the paper entirely, which
+ * is precisely how scripts go missing (IDN-05).
+ */
+class ScriptCaptureService
+{
+    /**
+     * CAP-01 and CAP-06. A4 at 200 dpi is roughly 1654 by 2339 pixels, so 10 MB
+     * is generous for a single page while still refusing a phone video.
+     */
+    public const MAX_UPLOAD_KILOBYTES = 10240;
+
+    /**
+     * @var list<string>
+     */
+    public const ACCEPTED_MIME_TYPES = [
+        'image/png',
+        'image/jpeg',
+        'image/jpg',
+        'image/webp',
+        'application/pdf',
+    ];
+
+    public function __construct(
+        private readonly string $disk = 'local',
+    ) {}
+
+    /**
+     * Store a scan and queue it for reading.
+     *
+     * @param  array{student_id?: int|null, expected_page_count?: int|null, page_number?: int}  $meta
+     */
+    public function capture(User $actor, Exam $exam, UploadedFile $file, array $meta = []): Script
+    {
+        if (! $exam->canAcceptScripts()) {
+            throw ValidationException::withMessages([
+                'exam' => 'This examination has been finalised, so no more scripts can be added to it. Create a new examination instead.',
+            ]);
+        }
+
+        $mime = $file->getMimeType();
+
+        if (! in_array($mime, self::ACCEPTED_MIME_TYPES, true)) {
+            throw ValidationException::withMessages([
+                'file' => 'We cannot read that file as a scanned script. Please upload a photograph or a scan in PNG, JPG or PDF format.',
+            ]);
+        }
+
+        $studentId = $this->resolveStudent($exam, $meta['student_id'] ?? null);
+
+        // SHT-02: an opaque code. Nothing about the candidate is encoded in it,
+        // so a lost or photographed sheet cannot expose a name.
+        $code = $this->generateCode($exam);
+
+        $extension = $this->extensionFor($file, $mime);
+        $directory = sprintf('scripts/%d/%d', $exam->id, $exam->id);
+        $path = sprintf('%s/%s.%s', $directory, $code, $extension);
+
+        $storage = Storage::disk($this->disk);
+        $bytes = $file->get();
+
+        // CAP-07: written once. The hash is tamper evidence verified on a
+        // schedule by the archive work in Phase 10.
+        $hash = hash('sha256', $bytes);
+        $storage->put($path, $bytes);
+
+        $expectedPages = max(1, (int) ($meta['expected_page_count'] ?? 1));
+
+        try {
+            $script = DB::transaction(fn (): Script => Script::query()->create([
+                'institution_id' => $exam->institution_id,
+                'owner_user_id' => $exam->owner_user_id,
+                'exam_id' => $exam->id,
+                'student_id' => $studentId,
+                'code' => $code,
+                'status' => Script::STATUS_UPLOADED,
+                'original_disk' => $this->disk,
+                'original_path' => $path,
+                'original_hash' => $hash,
+                'original_name' => $file->getClientOriginalName(),
+                'mime_type' => $mime,
+                'size_bytes' => strlen($bytes),
+                'page_count' => max(1, (int) ($meta['page_number'] ?? 1)),
+                'expected_page_count' => $expectedPages,
+                'created_by' => $actor->id,
+                'updated_by' => $actor->id,
+            ]));
+        } catch (\Throwable $exception) {
+            // Do not leave an orphan file behind if the row could not be written.
+            $storage->delete($path);
+
+            throw $exception;
+        }
+
+        // A PDF may hold several pages. Counted here rather than assumed, so a
+        // multi-page upload does not silently look like a single page.
+        if ($mime === 'application/pdf') {
+            $pageCount = $this->countPdfPages($bytes);
+            if ($pageCount > 1) {
+                $script->update(['page_count' => $pageCount, 'expected_page_count' => $pageCount]);
+            }
+        }
+
+        if ($studentId === null) {
+            // IDN-05: the paper is kept and marked as needing identification.
+            // Refusing the upload would lose it, which is how a candidate ends
+            // up with no result at all.
+            $script->update([
+                'status' => Script::STATUS_UPLOADED,
+                'flag_note' => 'This script was uploaded without a candidate, so it needs to be matched to one before it can be marked.',
+            ]);
+        }
+
+        // Queued rather than run inline: reading a page takes 13 seconds and
+        // grading it 10 to 25, so holding a request open is not viable.
+        ProcessScriptJob::dispatch($script->id);
+
+        Log::info('Script captured', [
+            'script_id' => $script->id,
+            'exam_id' => $exam->id,
+            'student_id' => $studentId,
+            'bytes' => $script->size_bytes,
+        ]);
+
+        return $script->refresh();
+    }
+
+    /**
+     * @return array<int, Script>
+     */
+    public function listForExam(Exam $exam): array
+    {
+        return $exam->scripts()
+            ->with('student')
+            ->orderByDesc('created_at')
+            ->get()
+            ->all();
+    }
+
+    public function find(int $id, User $actor): ?Script
+    {
+        return Script::query()
+            ->visibleTo($actor)
+            ->with(['student', 'exam.courseUnit', 'answers.question'])
+            ->whereKey($id)
+            ->first();
+    }
+
+    /**
+     * The original scan, as a temporary URL.
+     *
+     * The storage path is never returned by any resource. A signed, expiring URL
+     * is what keeps an unpublished examination from being readable by anyone
+     * who guesses a path (ARC-04).
+     */
+    public function temporaryUrl(Script $script): string
+    {
+        return Storage::disk($script->original_disk)->temporaryUrl(
+            $script->original_path,
+            now()->addMinutes(15),
+        );
+    }
+
+    /**
+     * A student from this tenant, or null when the operator could not say.
+     */
+    private function resolveStudent(Exam $exam, ?int $studentId): ?int
+    {
+        if ($studentId === null) {
+            return null;
+        }
+
+        $enrolled = $exam->students()->whereKey($studentId)->exists();
+
+        if (! $enrolled) {
+            throw ValidationException::withMessages([
+                'student_id' => 'That candidate is not on the list for this examination. Enrol them first, or upload the script without a candidate so it can be matched later.',
+            ]);
+        }
+
+        return $studentId;
+    }
+
+    /**
+     * SHT-02: opaque and unique, carrying no personal data.
+     */
+    private function generateCode(Exam $exam): string
+    {
+        do {
+            $code = sprintf('CG-%05d-%s', $exam->id, strtoupper(bin2hex(random_bytes(3))));
+        } while (Script::query()->where('code', $code)->exists());
+
+        return $code;
+    }
+
+    private function extensionFor(UploadedFile $file, string $mime): string
+    {
+        return match ($mime) {
+            'image/png' => 'png',
+            'image/jpeg', 'image/jpg' => 'jpg',
+            'image/webp' => 'webp',
+            'application/pdf' => 'pdf',
+            default => $file->guessExtension() ?? 'bin',
+        };
+    }
+
+    /**
+     * Count pages in a PDF by counting page objects, without a PDF library.
+     *
+     * An approximate count is enough here. What matters is not understating a
+     * multi-page upload, because a script that looks like one page when it is
+     * three is exactly the incompleteness MRK-02 has to catch later.
+     */
+    private function countPdfPages(string $bytes): int
+    {
+        $matches = [];
+
+        if (preg_match_all('#/Type\s*/Page[^s]#', $bytes, $matches) === false) {
+            return 1;
+        }
+
+        $count = count($matches[0]);
+
+        return $count > 0 ? $count : 1;
+    }
+}
