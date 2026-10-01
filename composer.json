@@ -52,6 +52,8 @@
             "@php artisan config:clear --ansi",
             "@php artisan test"
         ],
+        "vera:fast": "@php scripts/vera-fast.php",
+        "vera:logic": "@php scripts/vera-logic.php",
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
             "@php artisan package:discover --ansi"
