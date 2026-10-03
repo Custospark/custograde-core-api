@@ -46,8 +46,9 @@ final class OmrReadingApiTest extends ScriptMarkingTestCase
 
         $key = [];
 
-        // A different letter per question, so a reader that always answered the
-        // same column would fail rather than pass by luck.
+        // A different letter per question, cycling, so a reader that always
+        // answered the same column would fail rather than pass by luck. Cycles
+        // because a long paper is more than four questions.
         $letters = ['A', 'C', 'B', 'D'];
 
         for ($number = 1; $number <= $questionCount; $number++) {
@@ -60,7 +61,7 @@ final class OmrReadingApiTest extends ScriptMarkingTestCase
                 'options' => ['alpha', 'beta', 'gamma', 'delta'],
             ], $this->headers)->assertCreated();
 
-            $key[$number] = $letters[$number - 1];
+            $key[$number] = $letters[($number - 1) % count($letters)];
         }
 
         return [$examId, $key];
@@ -231,6 +232,38 @@ final class OmrReadingApiTest extends ScriptMarkingTestCase
         $this->assertArrayNotHasKey('omr', $body);
     }
 
+    public function test_an_objective_section_too_long_for_one_capture_reports_nothing(): void
+    {
+        // More questions than fit on one objective page, so the section needs a
+        // second page that a single capture cannot supply.
+        //
+        // The readings must be absent rather than partial. A partial summary reads
+        // "0 of 26 filled" for questions whose page was never looked at, and a
+        // marker would reasonably take that as the candidate having skipped them.
+        [$examId] = $this->objectiveExam(OmrLayout::QUESTIONS_PER_PAGE + 4);
+
+        $studentId = $this->makeStudentForExam($examId);
+        $sheet = $this->postJson("/api/v1/exams/{$examId}/sheets", [
+            'student_id' => $studentId,
+        ], $this->headers)->assertCreated()->json('sheet');
+
+        $script = Script::findOrFail($sheet['script_id']);
+        $script->forceFill(['page_count' => 1])->save();
+
+        $this->post("/api/v1/exams/{$examId}/scripts", [
+            'file' => $this->filledScan($script, [1 => 'A']),
+            'student_id' => $studentId,
+        ], $this->headers)->assertCreated();
+
+        $body = $this->getJson("/api/v1/scripts/{$script->id}", $this->headers)->assertOk()->json();
+
+        $this->assertArrayNotHasKey(
+            'omr',
+            $body,
+            'A partial objective summary implies the candidate skipped questions nobody looked at'
+        );
+    }
+
     private function makeStudentForExam(int $examId): int
     {
         $exam = \App\Models\Exam::findOrFail($examId);
@@ -248,4 +281,5 @@ final class OmrReadingApiTest extends ScriptMarkingTestCase
 final class OmrReadingServiceForTests
 {
     public const DPI = \App\Services\OmrReadingService::DEFAULT_DPI;
+
 }

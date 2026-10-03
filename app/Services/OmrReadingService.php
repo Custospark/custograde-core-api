@@ -94,24 +94,33 @@ final class OmrReadingService
                 return [];
             }
 
-            $readings = [];
+            /*
+             * Until assembly exists (IDN-01) a capture is one image, so exactly
+             * one page can be read. This used to loop to the script's page count
+             * and measure pages 2, 3 and so on against page one's pixels, which is
+             * not a reading at all: it samples blank paper and reports the
+             * question as unanswered. The comment above the loop said one thing
+             * and the loop did another.
+             *
+             * If the objective section needs more pages than can be read, no
+             * readings are returned at all. A partial summary would show "0 of 3
+             * filled" for a paper whose last page was never looked at, and a
+             * marker would reasonably read that as the candidate having skipped
+             * two questions. Better to show nothing and let the bubbles be read
+             * by hand, which is the fallback the design already promises.
+             */
+            $pagesNeeded = $this->highestPageIn($layout);
 
-            // Page count is honoured rather than assumed. Until assembly (IDN-01)
-            // a scan is a single image, so only page one can be read. Reading past
-            // it would report a question as blank because its page was never
-            // looked at, which is the same as saying the candidate left it empty.
-            $pages = max(1, (int) $script->page_count);
+            if ($pagesNeeded > 1) {
+                Log::info('Objective section spans more pages than a single capture can supply', [
+                    'script_id' => $script->id,
+                    'pages_needed' => $pagesNeeded,
+                ]);
 
-            for ($page = 1; $page <= $pages; $page++) {
-                $readings += app(BubbleReader::class)->readPage(
-                    $image,
-                    $layout,
-                    $page,
-                    static::DEFAULT_DPI
-                );
+                return [];
             }
 
-            return $readings;
+            return app(BubbleReader::class)->readPage($image, $layout, 1, static::DEFAULT_DPI);
         } catch (\Throwable $exception) {
             // A scan this service cannot read is not a broken examination. The
             // marking screen shows the handwriting and the marker fills the
@@ -124,6 +133,22 @@ final class OmrReadingService
 
             return [];
         }
+    }
+
+    /**
+     * The highest objective page number the layout needs.
+     *
+     * @param  array<int, array{page:int,row:int,options:array<string,array{x:float,y:float}>}>  $layout
+     */
+    private function highestPageIn(array $layout): int
+    {
+        $highest = 1;
+
+        foreach ($layout as $entry) {
+            $highest = max($highest, (int) $entry['page']);
+        }
+
+        return $highest;
     }
 
     private function loadImage(string $path, string $mime): ?\GdImage

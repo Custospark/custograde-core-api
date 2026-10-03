@@ -98,7 +98,7 @@ class ScriptResource extends JsonResource
             // questions or the scan has not been read, so the client can tell
             // "nothing to read" from "read and found nothing marked".
             'omr' => $this->when(
-                $this->original_path !== null,
+                $this->omrReadings() !== [],
                 fn (): array => $this->omrReadings()
             ),
 
