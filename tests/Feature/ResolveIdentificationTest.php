@@ -24,6 +24,8 @@ use Illuminate\Support\Facades\Storage;
  */
 class ResolveIdentificationTest extends ScriptMarkingTestCase
 {
+    use \Tests\Concerns\WritesScratchImages;
+
     /**
      * Draw a code onto an A4 canvas.
      *
@@ -97,7 +99,7 @@ class ResolveIdentificationTest extends ScriptMarkingTestCase
 
         // Mirrored to the top left. The inline attempt only looks top right, so
         // this arrives unidentified.
-        $file = $this->sheetWithCodeOnScan($sheet['code'], 'resolve_mirror.png', mirror: true);
+        $file = $this->sheetWithCodeOnScan($sheet['code'], $this->scratch('resolve_mirror.png'), mirror: true);
 
         $placeholderId = $this->post("/api/v1/exams/{$exam->id}/scripts", [
             'file' => $file,
@@ -135,12 +137,12 @@ class ResolveIdentificationTest extends ScriptMarkingTestCase
         $sheet = $this->issueSheet($exam->id, $studentId);
 
         // The first copy of this candidate's sheet uploads and matches at once.
-        $ok = $this->sheetWithCodeOnScan($sheet['code'], 'resolve_first.png');
+        $ok = $this->sheetWithCodeOnScan($sheet['code'], $this->scratch('resolve_first.png'));
         $this->post("/api/v1/exams/{$exam->id}/scripts", ['file' => $ok], $this->uploadHeaders())
             ->assertCreated();
 
         // The same sheet again, in a layout the quick pass misses.
-        $again = $this->sheetWithCodeOnScan($sheet['code'], 'resolve_again.png', mirror: true);
+        $again = $this->sheetWithCodeOnScan($sheet['code'], $this->scratch('resolve_again.png'), mirror: true);
         $placeholderId = $this->post("/api/v1/exams/{$exam->id}/scripts", [
             'file' => $again,
         ], $this->uploadHeaders())->assertCreated()->json('script.id');
@@ -165,7 +167,7 @@ class ResolveIdentificationTest extends ScriptMarkingTestCase
         $studentId = $this->makeStudent($exam);
         $sheet = $this->issueSheet($exam->id, $studentId);
 
-        $file = $this->sheetWithCodeOnScan($sheet['code'], 'resolve_answers.png', mirror: true);
+        $file = $this->sheetWithCodeOnScan($sheet['code'], $this->scratch('resolve_answers.png'), mirror: true);
         $placeholderId = $this->post("/api/v1/exams/{$exam->id}/scripts", [
             'file' => $file,
         ], $this->uploadHeaders())->assertCreated()->json('script.id');
@@ -200,10 +202,10 @@ class ResolveIdentificationTest extends ScriptMarkingTestCase
 
         $page = imagecreatetruecolor(1654, 2339);
         imagefilledrectangle($page, 0, 0, 1654, 2339, imagecolorallocate($page, 255, 255, 255));
-        imagepng($page, 'resolve_blank.png');
+        imagepng($page, $this->scratch('resolve_blank.png'));
 
         $placeholderId = $this->post("/api/v1/exams/{$exam->id}/scripts", [
-            'file' => $this->wrap('resolve_blank.png'),
+            'file' => $this->wrap($this->scratch('resolve_blank.png')),
             'student_id' => $studentId,
         ], $this->uploadHeaders())->assertCreated()->json('script.id');
 
@@ -241,10 +243,10 @@ class ResolveIdentificationTest extends ScriptMarkingTestCase
 
         $page = imagecreatetruecolor(1654, 2339);
         imagefilledrectangle($page, 0, 0, 1654, 2339, imagecolorallocate($page, 255, 255, 255));
-        imagepng($page, 'resolve_queued.png');
+        imagepng($page, $this->scratch('resolve_queued.png'));
 
         $this->post("/api/v1/exams/{$exam->id}/scripts", [
-            'file' => $this->wrap('resolve_queued.png'),
+            'file' => $this->wrap($this->scratch('resolve_queued.png')),
         ], $this->uploadHeaders())->assertCreated();
 
         Bus::assertDispatched(ResolveIdentificationJob::class);

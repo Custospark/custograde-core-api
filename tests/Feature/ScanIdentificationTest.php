@@ -22,6 +22,8 @@ use Illuminate\Support\Facades\Storage;
  */
 class ScanIdentificationTest extends ScriptMarkingTestCase
 {
+    use \Tests\Concerns\WritesScratchImages;
+
     /**
      * Headers for a multipart upload.
      *
@@ -68,8 +70,12 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
      * location, and the direct reader test needs the bytes where they were
      * actually drawn.
      */
-    private function scanCarrying(string $code, string $path = 'scan.png', int $noise = 0): string
+    private function scanCarrying(string $code, string $path = '', int $noise = 0): string
     {
+        // A default value cannot call $this, so the scratch path is resolved here
+        // rather than in the signature.
+        $path = $path !== '' ? $path : $this->scratch('scan.png');
+
         $payload = app(SheetCodeService::class)->encode(
             (static function () use ($code) {
                 $script = new Script(['code' => $code]);
@@ -84,7 +90,7 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
         $options = new QROptions;
         $options->outputType = QROutputInterface::GDIMAGE_PNG;
         $options->eccLevel = EccLevel::H;
-        (new QRCode($options))->render($payload, $path.'.qr.png');
+        (new QRCode($options))->render($payload, $this->scratch(basename($path).'.qr.png'));
 
         $codeImage = imagecreatefrompng($path.'.qr.png');
 
@@ -117,7 +123,7 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
     public function test_it_reads_a_code_off_a_realistic_scan(): void
     {
         $identifier = app(ScanIdentifier::class);
-        $path = $this->scanCarrying('CG-00042-ABCDEF', 'idn_ok.png', 250);
+        $path = $this->scanCarrying('CG-00042-ABCDEF', $this->scratch('idn_ok.png'), 250);
 
         $found = $identifier->identifyFromPath($path, 'image/png');
 
@@ -139,10 +145,10 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
             $y = random_int(80, 2200);
             imageline($page, $x, $y, $x + random_int(-40, 90), $y + random_int(-6, 6), $ink);
         }
-        imagepng($page, 'idn_none.png');
+        imagepng($page, $this->scratch('idn_none.png'));
 
         // IDN-05: an unreadable page is kept, never refused and never an error.
-        $this->assertNull($identifier->identifyFromPath('idn_none.png', 'image/png'));
+        $this->assertNull($identifier->identifyFromPath($this->scratch('idn_none.png'), 'image/png'));
     }
 
     public function test_a_pdf_upload_is_left_for_page_assembly_rather_than_failing(): void
@@ -165,7 +171,7 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
             'student_id' => $studentId,
         ], $this->headers)->assertCreated()->json('sheet');
 
-        $file = $this->upload($this->scanCarrying($sheet['code'], 'idn_attach.png', 200));
+        $file = $this->upload($this->scanCarrying($sheet['code'], $this->scratch('idn_attach.png'), 200));
 
         $response = $this->post("/api/v1/exams/{$exam->id}/scripts", [
             'file' => $file,
@@ -199,10 +205,10 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
             $y = random_int(80, 2200);
             imageline($page, $x, $y, $x + random_int(-40, 90), $y + random_int(-6, 6), $ink);
         }
-        imagepng($page, 'idn_upload_none.png');
+        imagepng($page, $this->scratch('idn_upload_none.png'));
 
         $response = $this->post("/api/v1/exams/{$exam->id}/scripts", [
-            'file' => $this->upload('idn_upload_none.png'),
+            'file' => $this->upload($this->scratch('idn_upload_none.png')),
             'student_id' => $studentId,
         ], $this->uploadHeaders())->assertCreated();
 
@@ -221,7 +227,7 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
         // A code this examination never issued. The signature verifies, because
         // it is a real code, but it belongs to no row here.
         $foreign = 'CG-99999-DEADBE';
-        $file = $this->upload($this->scanCarrying($foreign, 'idn_foreign.png', 100));
+        $file = $this->upload($this->scanCarrying($foreign, $this->scratch('idn_foreign.png'), 100));
 
         $response = $this->post("/api/v1/exams/{$exam->id}/scripts", [
             'file' => $file,
@@ -255,7 +261,7 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
         $this->assertNotSame($first['code'], $current);
 
         // A scan of the RETIRED sheet must not attach to the reissued row.
-        $retired = $this->upload($this->scanCarrying($first['code'], 'idn_retired.png', 100));
+        $retired = $this->upload($this->scanCarrying($first['code'], $this->scratch('idn_retired.png'), 100));
         $this->post("/api/v1/exams/{$exam->id}/scripts", ['file' => $retired], $this->uploadHeaders())
             ->assertCreated();
 
@@ -291,7 +297,7 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
         $headers = ['Authorization' => 'Bearer ' . $other->json('token')];
 
         // They cannot even reach our examination, so no code of ours resolves.
-        $file = $this->upload($this->scanCarrying($sheet['code'], 'idn_tenant.png', 100));
+        $file = $this->upload($this->scanCarrying($sheet['code'], $this->scratch('idn_tenant.png'), 100));
 
         $this->post("/api/v1/exams/{$exam->id}/scripts", ['file' => $file], $headers)
             ->assertNotFound();
@@ -309,12 +315,12 @@ class ScanIdentificationTest extends ScriptMarkingTestCase
         $page = imagecreatetruecolor(1654, 2339);
         $white = imagecolorallocate($page, 255, 255, 255);
         imagefilledrectangle($page, 0, 0, 1654, 2339, $white);
-        imagepng($page, 'idn_timing.png');
+        imagepng($page, $this->scratch('idn_timing.png'));
 
         $started = microtime(true);
 
         $this->post("/api/v1/exams/{$exam->id}/scripts", [
-            'file' => $this->upload('idn_timing.png'),
+            'file' => $this->upload($this->scratch('idn_timing.png')),
             'student_id' => $studentId,
         ], $this->uploadHeaders())->assertCreated();
 

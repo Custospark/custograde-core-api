@@ -22,3 +22,9 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Scan artefacts written by identification tests. They belong in a temp
+# directory; see tests/Concerns/WritesScratchImages.php.
+idn_*.png
+resolve_*.png
+*.qr.png
