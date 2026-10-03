@@ -40,21 +40,39 @@ class AnswerSheetService
      */
     public function render(Script $script): string
     {
-        $script->loadMissing(['exam.courseUnit', 'student']);
+        $script->loadMissing(['exam.courseUnit', 'exam.questions', 'student']);
         $exam = $script->exam;
         $questions = $this->questionsInOrder($exam);
+
+        // Objective questions are bubbled and live on their own pages, after the
+        // written ones (OmrLayout). Splitting them here as well as there is
+        // deliberate: the layout decides that a bubble's position must not depend
+        // on how much the previous candidate wrote, and that is only true if the
+        // renderer honours it rather than laying the two kinds of question out in
+        // one flow.
+        $bubbled = OmrLayout::bubbled($questions);
+        $written = $questions->reject(fn (ExamQuestion $q) => OmrLayout::isBubbled($q))->values();
 
         // A sheet is paginated by room for writing, not by question count. Five
         // questions per page keeps each region roughly 35mm tall, which is what
         // a legible multi-line answer actually needs.
-        $pageCount = max(1, (int) ceil($questions->count() / static::QUESTIONS_PER_PAGE));
-        $script->forceFill(['expected_page_count' => $pageCount])->saveQuietly();
+        //
+        // Zero pages when there is nothing to write, rather than one blank page.
+        // An exam that is entirely multiple choice should not hand a candidate a
+        // sheet with their name on it and no question on it, and a page count that
+        // claims otherwise is also what the QR encodes.
+        $pageCount = (int) ceil($written->count() / static::QUESTIONS_PER_PAGE);
+        $script->forceFill([
+            'expected_page_count' => $pageCount + OmrLayout::pageCount($questions),
+        ])->saveQuietly();
 
         $pdf = Pdf::loadView('sheets.answer-sheet', [
             'script' => $script,
             'exam' => $exam,
             'student' => $script->student,
-            'questions' => $questions,
+            'questions' => $written,
+            'bubbled' => $bubbled,
+            'omr' => OmrLayout::forQuestions($questions),
             'pageCount' => $pageCount,
             'questionsPerPage' => static::QUESTIONS_PER_PAGE,
             'qr' => fn (int $page) => $this->qrDataUri($this->codes->encode($script, $page, $pageCount)),

@@ -90,12 +90,56 @@
         .question-prompt { padding: 2mm 2.5mm 0 2.5mm; font-size: 9pt; }
         .answer-region { min-height: 26mm; margin: 2mm; }
 
-        /*
-            Writing guides. Light enough not to compete with handwriting, dark
-            enough to still print. Dotted so a candidate does not mistake them
-            for answer boundaries.
-        */
-        .guide { border-bottom: 0.3mm dotted #666; height: 7mm; margin: 0 2mm; }
+        {{-- OMR-01: bubbles are placed at the exact millimetre coordinates
+             OmrLayout publishes, rather than laid out in normal flow.
+
+             A table with fixed cell widths was tried first, because dompdf is
+             said to be more reliable with tables. It is not: it laid the number
+             column out at roughly a third of the width it was given, which put
+             every bubble five millimetres right of where the reader looks, and
+             the pitch came out right while the origin came out wrong. That is
+             the worst shape of bug, because a grid that is internally consistent
+             looks correct and still reads the wrong column.
+
+             Absolute placement was measured to be accurate to a tenth of a
+             millimetre in both axes, which is well inside the reader's sampling
+             radius. The correction is half the PRINTED diameter, not half the
+             declared one: dompdf does not apply border-box sizing here, so the
+             stroke sits outside the declared width and a ring centred on half
+             the declared diameter lands a third of a millimetre low. --}}
+        .omr-head {
+            height: 20mm;
+            overflow: hidden;
+        }
+        .omr-head .institution { font-size: 9pt; font-weight: bold; }
+        .omr-head .exam-title { font-size: 10pt; }
+        .omr-head .who { font-size: 9pt; }
+        .omr-head .how { font-size: 8pt; }
+
+        .omr-bubble {
+            position: absolute;
+            width: {{ \App\Services\OmrLayout::BUBBLE_DIAMETER_MM }}mm;
+            height: {{ \App\Services\OmrLayout::BUBBLE_DIAMETER_MM }}mm;
+            border: {{ \App\Services\OmrLayout::BUBBLE_BORDER_MM }}mm solid #000;
+            border-radius: 50%;
+        }
+        .omr-letter {
+            position: absolute;
+            font-size: 7pt;
+            line-height: 1;
+            width: 6mm;
+            margin-left: -3mm;
+            text-align: center;
+        }
+        .omr-number {
+            position: absolute;
+            font-size: 9pt;
+            font-weight: bold;
+            line-height: 1;
+            width: 10mm;
+            margin-left: -16mm;
+            text-align: right;
+        }
 
         .sheet-footer {
             position: fixed;
@@ -117,6 +161,7 @@
     <div class="fiducial bl"></div>
     <div class="fiducial br"></div>
 
+    @if (! $questions->isEmpty())
     <div class="sheet-header">
         <table style="width:100%; border-spacing:0;">
             <tr>
@@ -150,15 +195,19 @@
             </tr>
         </table>
     </div>
+    @endif
 
     @php $chunked = $questions->chunk($questionsPerPage); @endphp
 
-    @foreach ($chunked as $chunkIndex => $chunk)
+    {{-- No written page at all when every question is bubbled. An exam that is
+         entirely multiple choice should not hand a candidate a blank page with
+         their name on it and nothing to do. --}}
+    @foreach ($questions->isEmpty() ? [] : $chunked as $chunkIndex => $chunk)
         @php $pageNumber = $chunkIndex + 1; @endphp
 
         {{-- One printed page per chunk. `break-after` is what makes dompdf
              start a real page here rather than merely reflowing. --}}
-        <div class="page" style="break-after: page;">
+        <div style="page-break-after: always; break-after: page;">
             {{--
                 SHT-03: every page carries its own code, and that code names this
                 page and the total. Not repeated from page 1, because the exact
@@ -203,6 +252,52 @@
             </div>
         </div>
     @endforeach
+
+    {{-- OMR-01: objective pages come after the written ones, grouped by the
+         page OmrLayout assigned each question. They are separate pages rather
+         than a section within them because written answers have variable height,
+         so a bubble inside a mixed page would sit at a different height for every
+         candidate. --}}
+    @if ($bubbled->isNotEmpty())
+        @php $omrPages = collect($omr)->groupBy(fn ($entry) => $entry['page']); @endphp
+
+        @foreach ($omrPages as $omrPageNumber => $pageEntries)
+            <div style="page-break-after: always; break-after: page;">
+                {{-- A fixed height, so a long name cannot shift the grid. --}}
+                <div class="omr-head">
+                    <div class="institution">{{ $exam->courseUnit?->institution?->name ?? '' }}</div>
+                    <div class="exam-title">{{ $exam->title }} &nbsp;&middot;&nbsp; Section A: multiple choice</div>
+                    <div class="who">
+                        {{ $student ? trim($student->first_name.' '.$student->last_name) : 'Unassigned' }}
+                        &nbsp;&middot;&nbsp; {{ $student?->reg_no ?? '-' }}
+                    </div>
+                    <div class="how">Fill one bubble per question with a pencil. Erase fully to change your mind.</div>
+                </div>
+
+                @php $half = \App\Services\OmrLayout::printedDiameter() / 2; @endphp
+
+                @foreach ($bubbled as $question)
+                    @php $entry = $omr[$question->id] ?? null; @endphp
+                    @continue(! $entry || $entry['page'] !== $omrPageNumber)
+
+                    @php $first = $entry['options'][array_key_first($entry['options'])]; @endphp
+                    @php $rowTop = \App\Services\OmrLayout::toContentOffset(0, $first['y']); @endphp
+
+                    <div class="omr-number" style="top: {{ $rowTop['top'] - 1.8 }}mm;">{{ $question->number }}</div>
+
+                    @foreach ($entry['options'] as $letter => $point)
+                        @php $at = \App\Services\OmrLayout::toContentOffset($point['x'], $point['y']); @endphp
+                        <div class="omr-bubble" style="left: {{ $at['left'] - $half }}mm; top: {{ $at['top'] - $half }}mm;"></div>
+                        <div class="omr-letter" style="left: {{ $at['left'] }}mm; top: {{ $at['top'] + $half + 0.1 }}mm;">{{ $letter }}</div>
+                    @endforeach
+                @endforeach
+
+                <div style="font-size:8pt; text-align:right; margin-top:2mm;">
+                    {{ $readable['code'] }} &nbsp;&middot;&nbsp; Section A, sheet {{ $omrPageNumber }} of {{ $omrPages->count() }}
+                </div>
+            </div>
+        @endforeach
+    @endif
 
     {{-- The fallback string belongs only on the first page: it is the whole
          sheet's identity, not each page's, and repeating it on every page of a
