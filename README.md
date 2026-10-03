@@ -7,6 +7,57 @@
 > Architecture decisions are in `docs/decisions.md`, entity notes in
 > `docs/entities.md`.
 
+## Running the Custograde stack locally
+
+Marking is not synchronous. A scan is uploaded, a job transcribes it, the AI
+service reads it, and suggestions come back. That means **three processes** are
+required, and a missing one fails quietly rather than loudly.
+
+```bash
+# 1. Laravel
+php artisan serve --host=127.0.0.1 --port=8000
+
+# 2. The queue worker. Without this, nothing is ever transcribed.
+php artisan queue:work --tries=1 --timeout=600 --sleep=1
+
+# 3. The Python AI service, in ../AI_Service
+.venv/Scripts/python.exe -m uvicorn app.api.server:app --host 127.0.0.1 --port 8100
+```
+
+### Why the queue worker is called out explicitly
+
+The end-to-end check hit this and it is worth knowing about. With Laravel running
+but no worker, `POST /exams/{id}/scripts` returns **201** and the script appears
+in the queue as `uploaded`. It then sits there forever. Nothing errors, no log
+line mentions a worker, and the upload looks successful.
+
+The symptom to recognise: an upload that returns success but never leaves
+`uploaded` state. Check the worker is running before investigating anything else.
+
+The `--timeout=600` is deliberate. A page with several questions takes the model
+around 13 seconds per page, and the default 60 second worker timeout kills long
+jobs mid-flight.
+
+### Confirming the stack is healthy
+
+```bash
+curl http://127.0.0.1:8000/api/v1/ai/health
+```
+
+Reports whether the AI service is reachable and whether a provider key is
+configured. A `false` here means uploads will queue and never complete, which is
+why the frontend states AI availability in the sidebar rather than leaving a
+marker to discover it as a blank panel.
+
+### Verifying end to end
+
+From the repository root, with all three processes running:
+
+```bash
+python ../e2e_check.py       # real scan in, released result out
+python ../contract_check.py  # API field names and types match the frontend
+```
+
 <p align="center">
 <a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
 <a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
