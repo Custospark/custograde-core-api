@@ -157,3 +157,126 @@ Response: `user`, `requires_email_verification`, `email`, and `token` (present o
 - [x] Liskov Substitution
 - [x] Interface Segregation
 - [x] Dependency Inversion (controller depends on `AuthServiceInterface`)
+
+---
+
+## Marking chain - 2026-10-03 07:30:00 - Req: EXM-01, EXM-02, STU-01, STU-03, CAP-01, CAP-07, IDN-02, IDN-05, OCR-01, OCR-04, OCR-07, AIG-01, AIG-03, AIG-11, REV-01, REV-02, REV-03, REV-04, REV-07, REV-08, REV-12, REV-13, MRK-01, MRK-02, MRK-03, MRK-04, MRK-08, MRK-09
+
+### The vertical slice that works end to end
+
+Verified live against a running API, a queue worker, the Python service and a
+real model. A scan of a handwritten script goes in and a released result comes
+out:
+
+| Q | Handwriting on the page | What the model did |
+|---|--------------------------|--------------------|
+| 1 | `3x = 18 therefore x = 6` | read it, suggested 4/4 at 0.95 confidence |
+| 2 | `(x - 2)(x - 3)` | read it, suggested 4/4 at 0.95 confidence |
+| 3 | a hand-drawn graph | read as `non_text`, proposed **nothing** |
+
+Q3 is the load-bearing case. A graph cannot be graded from text, so the model
+declined to guess and the answer was routed to a human, who marked it by hand.
+That is OCR-07 and BR-02 working together.
+
+Before a human acted, every `mark` column was NULL. After approval the script
+totalled 10 of 13 and graded A at 76.92 percent.
+
+### Fields
+
+- `exams`: title, type, exam_date, duration_minutes, total_marks, question_count, grading_scheme_id, blind_marking, results_visible_to_students, status
+- `exam_questions`: number, prompt, kind, max_mark, granularity, model_answer, guide_points (JSON), options (JSON), answer_key (JSON)
+- `students`: reg_no unique per institution, first_name, last_name, class_name, status
+- `exam_enrolments`: exam_id, student_id, unique pair
+- `scripts`: code unique and opaque, status, student_id, original_path, original_hash, mime_type, page_count, expected_page_count, total_mark, max_mark, annotations, locked_by, locked_at, flagged_by, flag_note
+- `script_answers`: machine_text, corrected_text, transcription_confidence, content_type, truncated, suggested_mark, suggestion_confidence, suggestion_rationale, matched_points, mark, mark_source, approved_by, approved_at, reason, feedback
+- `mark_events`: append-only, previous_value, new_value, source, reason, actor_id
+- `results`: total_mark, max_mark, percentage, grading_scheme_id, grade, is_pass, status, release_status, version
+
+### The human-in-the-loop rules, made structural
+
+- `ScriptAnswer::isDecided()` requires **both** `mark` and `approved_by`. A
+  value with no person attached does not count as decided, so nothing can
+  become final without an authenticated human action (BR-02).
+- Exactly one route in the application writes a mark:
+  `POST /api/v1/scripts/{id}/answers/{answer}/mark`. The pipeline writes only
+  `suggested_mark`.
+- `machine_text` is never overwritten. A teacher correction sits in
+  `corrected_text` beside it, so a disputed result can show what the system saw
+  and what the teacher changed (OCR-04).
+- A mark already approved is never overwritten by a later suggestion (EXM-07).
+- Locking is refused, in order, while a question is unmarked, while a page is
+  missing, or while a flag is open, and the message names the outstanding
+  question numbers (REV-08, MRK-02).
+- `mark_events` is append-only and written in the same transaction as the mark,
+  so the trail cannot disagree with what it describes (REV-13).
+- `original_path` plus `original_hash` is written once. Annotations live in
+  their own column, so nothing writes back over the scan a candidate handed in
+  (CAP-07).
+- Results are versioned. A correction writes version 2 and keeps version 1
+  (MRK-08).
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/ai/health` | AI service reachability and provider readiness (ADM-03) |
+| GET/POST | `/api/v1/exams` | List and create examinations |
+| GET/PUT/DELETE | `/api/v1/exams/{id}` | One examination with its questions |
+| POST | `/api/v1/exams/{id}/questions` | Add a question with its marking guide |
+| PUT/DELETE | `/api/v1/exams/{id}/questions/{question}` | Edit or remove a question |
+| PUT | `/api/v1/exams/{id}/status` | Lifecycle transition (EXM-06) |
+| POST | `/api/v1/exams/{id}/recalculate-totals` | Recompute paper totals |
+| GET/POST | `/api/v1/students` | Roster (STU-01) |
+| POST/DELETE | `/api/v1/exams/{id}/students` | Enrol and unenrol (STU-03) |
+| GET | `/api/v1/exams/{id}/scripts` | Scripts for an examination |
+| POST | `/api/v1/exams/{id}/scripts` | Upload a scan and queue it for reading (CAP-01) |
+| GET | `/api/v1/scripts/{id}` | One script with its answers |
+| GET | `/api/v1/scripts/{id}/image` | Short-lived signed URL for the scan (ARC-04) |
+| POST | `/api/v1/scripts/{id}/reprocess` | Re-run the pipeline after a failure |
+| POST | `/api/v1/scripts/{id}/answers/{answer}/mark` | **The only route that writes a mark** (REV-01) |
+| PUT | `/api/v1/scripts/{id}/answers/{answer}/transcription` | Correct the reading (OCR-04) |
+| POST | `/api/v1/scripts/{id}/lock` | Approve and lock (REV-08) |
+| POST | `/api/v1/scripts/{id}/unlock` | Reopen, with a reason (REV-08) |
+| POST | `/api/v1/scripts/{id}/flag` | Flag for investigation (REV-14) |
+| GET | `/api/v1/exams/{id}/results` | Compiled results |
+| GET | `/api/v1/exams/{id}/results/statistics` | Class statistics (MRK-03) |
+| POST | `/api/v1/exams/{id}/results/compile` | Compile from approved scripts (MRK-01) |
+| POST | `/api/v1/exams/{id}/results/release` | Release to candidates (MRK-09) |
+| POST | `/api/v1/exams/{id}/results/withhold` | Withdraw a release, deleting nothing |
+
+### Provider key isolation
+
+The model credentials live only in `AI_Service/.env`. Laravel never holds a
+provider key and the browser never reaches a model directly, so a tenant database
+dump cannot leak one and no client can call a model at all (AIG-10). Laravel
+reaches the service over HTTP with an optional `X-Internal-Key`.
+
+### Failure states
+
+| Failure | Behaviour |
+|---------|-----------|
+| AI unreachable | Job requeues with backoff. Manual marking unaffected (AIG-11) |
+| Scan rejected by the AI | Non-retryable. Script returns to `uploaded` for a teacher |
+| Exceeds max attempts | `failed()` hook leaves the script actionable rather than in `failed_jobs` |
+| Question not read | Stays `pending` with no mark, never scored zero |
+| Graph or diagram | `non_text`, routed to a human, confidence capped at 0.3 |
+| Another school's script | 404, identical to a script that does not exist |
+| No grading scheme | Compilation refuses and says why, rather than producing an ungraded result |
+
+### Test Results
+
+- `ScriptCaptureTest`: 4 passed (capture, unidentified paper kept, no path leak, cross-tenant refusal)
+- `ScriptPipelineTest`: 6 passed (pipeline never writes a mark, decisions, variance, granularity, totals)
+- `ScriptApprovalTest`: 9 passed (lock gate, graph by hand then approve, missing page, flag, locked rejects change, reopen needs reason, blind marking)
+- `AcademicStructureTestCase` plus three suites: 23 passed (ACD-02 to ACD-05, tenant isolation)
+- Existing auth suites: unchanged
+- Full suite: 69 passed, 470 assertions
+- `../contract_check.py`: every field the frontend types claim verified against the live API
+- `../e2e_check.py`: real scan to released result, all checks passed
+
+### SOLID Compliance Checklist
+- [x] Single Responsibility (MarkingService decides, ScriptPipelineService proposes, ScriptCaptureService stores)
+- [x] Open/Closed (AiServiceInterface hides the provider; a new transcriber changes no caller)
+- [x] Liskov Substitution (fake AI in tests satisfies the real contract)
+- [x] Interface Segregation (repositories, services and the AI client are separate contracts)
+- [x] Dependency Inversion (controllers and jobs depend on interfaces, bound in bootstrap/providers.php)

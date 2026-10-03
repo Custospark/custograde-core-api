@@ -111,3 +111,74 @@ client cannot believe it sent a code that was never minted.
   covered: `EmailVerificationDisabledTest` covers off, `AuthTest` covers on.
 - Before a real production pilot this should be turned on. It is a config
   change, not a code change.
+
+---
+
+## ADR-004 - The provider key lives only in the AI service
+
+**Date:** 2026-10-03
+**Status:** Accepted
+**Req:** AIG-10, CON-03
+
+### Context
+AIG-10 requires that only the data needed for grading reaches the model, and
+only through a backend proxy. It does not say where the provider credential is
+held, so the choice was open.
+
+### Decision
+The provider key is read from the environment by the Python service only.
+Laravel holds no provider key at all. It reaches the service over HTTP at
+`AI_SERVICE_URL` and optionally presents a shared `AI_INTERNAL_KEY`. No browser
+code calls a model or the AI service directly.
+
+### Rationale
+- The customers of this product are schools and examination bodies holding
+  candidate names and scripts. A credential sitting in the same database as
+  that data turns a single dump into a model account compromise.
+- The Python service is the only component whose job is to talk to a model, so
+  it is the only component that needs the credential.
+- Making Laravel a plain HTTP client means the AI service can be moved, replaced
+  or scaled without touching the API layer.
+
+### Consequences
+- A model outage is now a network hop rather than a missing constant, so
+  `GET /api/v1/ai/health` exists and the frontend states availability plainly
+  rather than letting a teacher discover it mid-paper.
+- The shared key is empty by default, which disables the check on the Python
+  side. That is a developer-machine state and it is reported by the health
+  endpoint so it cannot be an unnoticed assumption in a deployment.
+- Both Custograde and Custosell currently draw on one OpenRouter free-tier key,
+  so their rate limits are shared. Separate keys before production.
+
+---
+
+## ADR-005 - Marks arrive as mixed types and are normalised at the point of use
+
+**Date:** 2026-10-03
+**Status:** Accepted
+**Req:** MRK-01, AIG-01
+
+### Context
+MySQL decimal columns are cast in Eloquent. A `decimal:2` cast serialises as a
+JSON string, while a resource that casts to float on the way out serialises as a
+number. The same logical field, `max_mark`, does both depending on which
+endpoint delivered it: `ExamQuestionResource` emits a string, while the question
+nested inside `ScriptAnswerResource` emits a number.
+
+### Decision
+Frontend types for marks and confidences accept `number | string`, and the
+`markValue` and `confidenceValue` helpers normalise once at the point of use.
+
+### Rationale
+- Narrowing the type to one form would have been a guess, and `../contract_check.py`
+  exists precisely because a wrong guess is a silent runtime bug: a form that
+  treats a string as a number writes NaN into a mark.
+- The alternative, forcing every resource to cast consistently, is a breaking
+  change to every existing consumer for a cosmetic gain.
+
+### Consequences
+- `contract_check.py` verifies field names and value types against the running
+  API, so a drift is caught rather than discovered in a marking session.
+- An absent mark is null and never zero. "Not marked yet" and "marked zero" are
+  different facts in an examination, and collapsing them is how a candidate
+  loses a mark.
