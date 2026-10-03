@@ -10,6 +10,7 @@ use App\Repositories\Contracts\CourseUnitRepositoryInterface;
 use App\Services\Contracts\CourseResourceServiceInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -43,7 +44,17 @@ class CourseResourceService implements CourseResourceServiceInterface
 
     public function listForCourse(int $courseUnitId, User $user, bool $currentOnly = true): Collection
     {
-        $this->assertCourseIsVisible($user, $courseUnitId);
+        // A read of a course that is not there is a 404, not a validation
+        // failure. Sharing the upload guard with this path answered a GET with 422
+        // and a message about a document not being uploaded, which is not what
+        // happened and left the page stuck on a spinner.
+        //
+        // 404 rather than 403 on purpose: another school's course unit must be
+        // indistinguishable from one that does not exist, or this endpoint lets a
+        // caller enumerate every course id in the platform.
+        if ($this->courseUnits->findVisible($courseUnitId, $user) === null) {
+            throw (new ModelNotFoundException)->setModel(CourseUnit::class, [$courseUnitId]);
+        }
 
         return $this->resources->forCourseUnit($courseUnitId, $user, $currentOnly);
     }
@@ -180,6 +191,14 @@ class CourseResourceService implements CourseResourceServiceInterface
         return $path;
     }
 
+    /**
+     * The guard for write paths, where a helpful message beats a bare 404.
+     *
+     * Somebody who picked the wrong course in a form needs to be told which field
+     * is wrong and what to do about it. Somebody listing resources on a course
+     * that is not theirs needs only for the request to fail, so that path uses its
+     * own check and does not come through here.
+     */
     private function assertCourseIsVisible(User $user, int $courseUnitId): CourseUnit
     {
         $courseUnit = $this->courseUnits->findVisible($courseUnitId, $user);

@@ -178,6 +178,84 @@ class CourseUnitTest extends AcademicStructureTestCase
         $this->assertSame(2, CourseResource::where('course_unit_id', $courseId)->max('version'));
     }
 
+        /**
+     * Listing a course that is not visible is a 404, not a validation failure.
+     *
+     * Regression. This shared the upload guard with the read, so a GET answered
+     * 422 with "the document was not uploaded", which is not what happened. The
+     * courses page hangs on a spinner because of it.
+     */
+    public function test_listing_resources_for_an_unknown_course_is_not_found(): void
+    {
+        $response = $this->getJson('/api/v1/course-units/999999/resources', $this->headers)
+            ->assertNotFound();
+
+        // A read must never talk about uploading.
+        $this->assertStringNotContainsStringIgnoringCase(
+            'upload',
+            json_encode($response->json()),
+            'A GET has nothing to upload, so the message must not mention it.'
+        );
+    }
+
+    public function test_listing_resources_for_another_schools_course_is_not_found(): void
+    {
+        $courseId = $this->postJson('/api/v1/course-units', [
+            'code' => 'MATH401',
+            'title' => 'Mathematics',
+        ], $this->headers)->json('id');
+
+        Auth::forgetGuards();
+
+        $other = $this->postJson('/api/v1/auth/register', [
+            'account_type' => User::ACCOUNT_TYPE_INSTITUTIONAL,
+            'first_name' => 'Other',
+            'last_name' => 'School',
+            'institution_name' => 'Hillcrest Academy',
+            'institution_type' => 'Secondary School',
+            'email' => 'other@hillcrest.test',
+            'password' => 'password123',
+            'password_confirmation' => 'password123',
+            'privacy_consent' => true,
+        ])->assertCreated();
+
+        // 404 rather than 403, so this cannot be used to discover which course
+        // ids exist across the platform.
+        $this->getJson("/api/v1/course-units/{$courseId}/resources", [
+            'Authorization' => 'Bearer ' . $other->json('token'),
+        ])->assertNotFound();
+    }
+
+    public function test_listing_resources_for_your_own_course_is_an_empty_list_not_an_error(): void
+    {
+        $courseId = $this->postJson('/api/v1/course-units', [
+            'code' => 'MATH401',
+            'title' => 'Mathematics',
+        ], $this->headers)->json('id');
+
+        // A course with no documents is empty, not broken. Conflating the two is
+        // what makes an empty state look like a failure.
+        $response = $this->getJson("/api/v1/course-units/{$courseId}/resources", $this->headers)
+            ->assertOk();
+
+        $this->assertSame([], $response->json(), 'A course with no documents returns an empty list');
+    }
+
+    public function test_resource_upload_still_reports_a_bad_course_as_a_field_error(): void
+    {
+        Storage::fake('local');
+
+        // The write path keeps the helpful message, because somebody who picked
+        // the wrong course in a form needs to know which field is wrong.
+        $this->postJson('/api/v1/course-units/999999/resources', [
+            'title' => 'Marking guide',
+            'kind' => CourseResource::KIND_MARKING_GUIDE,
+            'file' => UploadedFile::fake()->create('guide.pdf', 100, 'application/pdf'),
+        ], $this->headers)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['course_unit_id']);
+    }
+
     public function test_resource_upload_rejects_a_disallowed_file_type(): void
     {
         Storage::fake('local');
