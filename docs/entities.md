@@ -280,3 +280,299 @@ reaches the service over HTTP with an optional `X-Internal-Key`.
 - [x] Liskov Substitution (fake AI in tests satisfies the real contract)
 - [x] Interface Segregation (repositories, services and the AI client are separate contracts)
 - [x] Dependency Inversion (controllers and jobs depend on interfaces, bound in bootstrap/providers.php)
+
+---
+
+## Answer sheets and identification - 2026-10-03 - Req: SHT-01..09, IDN-02, IDN-05, IDN-08, AUT-05, SEC-07
+
+### What this closed
+
+Until this, a school could mark one paper at a time and had to pick the candidate
+from a dropdown for each scan. Both halves of that are gone. A whole class is
+printed with one queued run, and each returning scan identifies itself.
+
+Verified live, not only in tests: three candidates printed, a real 2.4MB archive
+of three real PDFs downloaded through the API, and a scan uploaded with no
+candidate selected attached to the row its own sheet had created and resolved to
+the right name and registration number.
+
+### Entities
+
+- **script_sheets**: every issue of a sheet for a script, including superseded
+  ones. A row per issue rather than a flag on `scripts`, because SHT-06 needs the
+  earlier code retired with the reason kept, and that is history. `code` is unique
+  because it is what a scan is matched on, and a collision would attach a paper to
+  the wrong candidate.
+- **sheet_batches**: one print run, with counters for processed, skipped and
+  failed. The counters are stored rather than derived, because "how many failed"
+  cannot be derived: a candidate who already has a sheet is skipped, which is
+  neither a success nor a failure.
+
+### The code on the paper (SHT-02)
+
+The payload is the script's opaque code, the page number, the page total and a
+twelve character HMAC. Nothing else, and no personal data, because a sheet gets
+photographed and posted online, and a name in the QR turns every leaked photograph
+into a disclosure of who sat the paper.
+
+It is deliberately **not** encrypted. Encrypting produced a 220 character payload,
+which a QR spreads across roughly a hundred modules, and the result was measured
+unreadable when printed at 16mm and scanned at 300dpi. SHT-02 asks for opacity and
+a signature, not confidentiality, and the script code is already unguessable.
+ADR-007 records this, because spending a QR's module budget on confidentiality is
+an easy mistake to repeat. There is now a test that renders the real payload at
+print size and reads the pixels back.
+
+### What is on the sheet, and why
+
+| Element | Requirement | Why it is there |
+|---------|-------------|-----------------|
+| QR on **every** page, carrying that page's number | SHT-03 | The failure to prevent is a page separated from its bundle and then unattributable |
+| Fiducials in all four physical corners | SHT-04 | Geometry must be normalisable from a photo taken at any angle |
+| One bordered region per question, fixed grid | SHT-04 | A transcription request can address a region instead of guessing at a page |
+| Printed human-readable code beside the QR | SHT-01 | The fallback for a damaged code is a person typing it by hand for thirty candidates |
+| Candidate name and registration number in clear text | SHT-01 | A marker needs to know whose paper this is. SHT-02 governs the QR payload only |
+
+In-flow fiducials landed mid-page instead of in the corners, which defeats the
+purpose, so they are fixed and pulled into the page margin with negative offsets.
+
+### Automatic identification (IDN-02)
+
+Two measurements shaped this, and both contradicted the obvious approach.
+
+Decoding the whole page **does not work**. The code is 16mm on a 210mm sheet, about
+120 pixels of a 1654 pixel wide page, and the detector gave up after 14 seconds and
+300MB. Upscaling first was far worse: a 3x upscale requested a 34 megapixel buffer
+and exhausted a 1GB limit. Cropping to where the code actually sits decoded it
+exactly, in 1.3 seconds and 82MB.
+
+So identification crops rather than scales, and the capture path makes exactly one
+attempt, because the thorough search costs up to 18 seconds on a page where nothing
+reads, and nobody should sit through that on an upload. Measured: 1.4s to succeed,
+about the same to fail. Anything missed gets the deeper queued search, which
+searches every region and every variant.
+
+Identification runs **before** a row is created, because issuing a sheet already
+made one. Identifying afterwards would leave two rows claiming one paper.
+
+### The rules that protect a candidate's marks
+
+- The signature is verified **before** any lookup, so a random string that happens
+  to scan, or another school's code, never reaches the database.
+- A match is scoped to the examination, to scripts with no file yet, and to sheets
+  still current. A superseded code therefore cannot attach, which is what makes a
+  reissue mean anything.
+- The deeper search never assigns a candidate. A code that reads but cannot be
+  placed is flagged for a person.
+- The deeper search never moves a placeholder that already has answers against it.
+  Moving the file while leaving the answers would put a candidate's marks on the
+  wrong paper, and deleting a row that holds marks is not a decision that job may
+  take. The paper is kept and escalated.
+- A page that reads as nothing is kept and flagged. Refusing it is how scripts go
+  missing (IDN-05).
+
+### Running the class
+
+- Queued, with progress the client polls. Rendering one sheet costs about a second,
+  so thirty candidates is half a minute of CPU that does not belong in a request.
+- A candidate who already holds a current sheet is **skipped**, not reissued.
+  Rotating codes on a repeat run would invalidate paper already printed and sitting
+  in a box at the school, with no error anywhere: the new sheets would be valid and
+  the old ones would quietly stop resolving, surfacing days later as unidentified
+  scans during marking. A test asserts the codes are byte for byte unchanged.
+- A second concurrent run is refused with 409.
+- One candidate failing does not abandon the rest. The name and reason are
+  collected and the run completes.
+- The archive is published only once every candidate is accounted for, and a run
+  that printed nothing produces no archive. A partial ZIP opens cleanly and looks
+  complete, and a teacher would print it believing the class was covered.
+
+### Roles (AUT-05, SEC-07)
+
+See ADR-010. Authority is ranked, so an actor may hand out a role only at or below
+their own. `system_admin` is not assignable inside a tenant. Nobody may change
+their own role. The last administrator is protected. Staff are deactivated rather
+than deleted, because a mark somebody approved is part of the record of how that
+mark came about.
+
+`institution_admin` deliberately still holds the marking path, because a fresh
+institution reaches it only through registration and would otherwise be unable to
+finish an examination. The trigger for narrowing it is recorded in ADR-010.
+
+### Test Results
+
+- AnswerSheetTest: 14 passed. Issue, reissue, code round trip, tamper refusal, no
+  personal data in the payload, a real PDF, print-size QR readability, tenancy,
+  capability.
+- SheetBatchTest: 11 passed. Queued, 409 on a concurrent run, skip without
+  rotating, partial archive refused, a real ZIP of real PDFs, failure isolation,
+  tenancy.
+- ScanIdentificationTest: 9 passed. Reads a real QR off a real 200dpi A4 canvas,
+  an unreadable page is kept, attaches to the issued sheet, foreign and superseded
+  codes refused, tenancy, and the upload is not held open.
+- ResolveIdentificationTest: 6 passed. Rescues a code where the quick pass does not
+  look, refuses reassignment, refuses to move marks, keeps unreadable pages,
+  escalates a missing file.
+- InstitutionUserTest: 18 passed. Add staff, generated password, rank rule,
+  self-change refused, system_admin unassignable, lockout rule, deactivate, tenancy.
+- RoleAuthorisationTest: 11 passed. A teacher cannot release or amend, an auditor
+  reads only, a scanner cannot read results, a moderator cannot mark, an unknown
+  role fails closed, tenancy.
+- Full suite: 138 passed, 1142 assertions.
+
+### A database lesson worth keeping
+
+Ordering the staff list by `last_name` passed on SQLite and failed on MySQL with
+"Unknown column", because `users` has one `name` column rather than first and
+last. The first implementation also *set* `first_name` and `last_name`, which mass
+assignment dropped silently, so staff were created with no name and nothin
+---
+
+## Answer sheets and identification - 2026-10-03 - Req: SHT-01..09, IDN-02, IDN-05, IDN-08, AUT-05, SEC-07
+
+### What this closed
+
+Until this, a school could mark one paper at a time and had to pick the candidate
+from a dropdown for each scan. Both halves of that are gone. A whole class is
+printed with one queued run, and each returning scan identifies itself.
+
+Verified live, not only in tests: three candidates printed, a real 2.4MB archive
+of three real PDFs downloaded through the API, and a scan uploaded with no
+candidate selected attached to the row its own sheet had created and resolved to
+the right name and registration number.
+
+### Entities
+
+- **script_sheets**: every issue of a sheet for a script, including superseded
+  ones. A row per issue rather than a flag on `scripts`, because SHT-06 needs the
+  earlier code retired with the reason kept, and that is history. `code` is unique
+  because it is what a scan is matched on, and a collision would attach a paper to
+  the wrong candidate.
+- **sheet_batches**: one print run, with counters for processed, skipped and
+  failed. The counters are stored rather than derived, because "how many failed"
+  cannot be derived: a candidate who already has a sheet is skipped, which is
+  neither a success nor a failure.
+
+### The code on the paper (SHT-02)
+
+The payload is the script's opaque code, the page number, the page total and a
+twelve character HMAC. Nothing else, and no personal data, because a sheet gets
+photographed and posted online, and a name in the QR turns every leaked photograph
+into a disclosure of who sat the paper.
+
+It is deliberately **not** encrypted. Encrypting produced a 220 character payload,
+which a QR spreads across roughly a hundred modules, and the result was measured
+unreadable when printed at 16mm and scanned at 300dpi. SHT-02 asks for opacity and
+a signature, not confidentiality, and the script code is already unguessable.
+ADR-007 records this, because spending a QR's module budget on confidentiality is
+an easy mistake to repeat. There is now a test that renders the real payload at
+print size and reads the pixels back.
+
+### What is on the sheet, and why
+
+| Element | Requirement | Why it is there |
+|---------|-------------|-----------------|
+| QR on **every** page, carrying that page's number | SHT-03 | The failure to prevent is a page separated from its bundle and then unattributable |
+| Fiducials in all four physical corners | SHT-04 | Geometry must be normalisable from a photo taken at any angle |
+| One bordered region per question, fixed grid | SHT-04 | A transcription request can address a region instead of guessing at a page |
+| Printed human-readable code beside the QR | SHT-01 | The fallback for a damaged code is a person typing it by hand for thirty candidates |
+| Candidate name and registration number in clear text | SHT-01 | A marker needs to know whose paper this is. SHT-02 governs the QR payload only |
+
+In-flow fiducials landed mid-page instead of in the corners, which defeats the
+purpose, so they are fixed and pulled into the page margin with negative offsets.
+
+### Automatic identification (IDN-02)
+
+Two measurements shaped this, and both contradicted the obvious approach.
+
+Decoding the whole page **does not work**. The code is 16mm on a 210mm sheet, about
+120 pixels of a 1654 pixel wide page, and the detector gave up after 14 seconds and
+300MB. Upscaling first was far worse: a 3x upscale requested a 34 megapixel buffer
+and exhausted a 1GB limit. Cropping to where the code actually sits decoded it
+exactly, in 1.3 seconds and 82MB.
+
+So identification crops rather than scales, and the capture path makes exactly one
+attempt, because the thorough search costs up to 18 seconds on a page where nothing
+reads, and nobody should sit through that on an upload. Measured: 1.4s to succeed,
+about the same to fail. Anything missed gets the deeper queued search, which
+searches every region and every variant.
+
+Identification runs **before** a row is created, because issuing a sheet already
+made one. Identifying afterwards would leave two rows claiming one paper.
+
+### The rules that protect a candidate's marks
+
+- The signature is verified **before** any lookup, so a random string that happens
+  to scan, or another school's code, never reaches the database.
+- A match is scoped to the examination, to scripts with no file yet, and to sheets
+  still current. A superseded code therefore cannot attach, which is what makes a
+  reissue mean anything.
+- The deeper search never assigns a candidate. A code that reads but cannot be
+  placed is flagged for a person.
+- The deeper search never moves a placeholder that already has answers against it.
+  Moving the file while leaving the answers would put a candidate's marks on the
+  wrong paper, and deleting a row that holds marks is not a decision that job may
+  take. The paper is kept and escalated.
+- A page that reads as nothing is kept and flagged. Refusing it is how scripts go
+  missing (IDN-05).
+
+### Running the class
+
+- Queued, with progress the client polls. Rendering one sheet costs about a second,
+  so thirty candidates is half a minute of CPU that does not belong in a request.
+- A candidate who already holds a current sheet is **skipped**, not reissued.
+  Rotating codes on a repeat run would invalidate paper already printed and sitting
+  in a box at the school, with no error anywhere: the new sheets would be valid and
+  the old ones would quietly stop resolving, surfacing days later as unidentified
+  scans during marking. A test asserts the codes are byte for byte unchanged.
+- A second concurrent run is refused with 409.
+- One candidate failing does not abandon the rest. The name and reason are
+  collected and the run completes.
+- The archive is published only once every candidate is accounted for, and a run
+  that printed nothing produces no archive. A partial ZIP opens cleanly and looks
+  complete, and a teacher would print it believing the class was covered.
+
+### Roles (AUT-05, SEC-07)
+
+See ADR-010. Authority is ranked, so an actor may hand out a role only at or below
+their own. `system_admin` is not assignable inside a tenant. Nobody may change
+their own role. The last administrator is protected. Staff are deactivated rather
+than deleted, because a mark somebody approved is part of the record of how that
+mark came about.
+
+`institution_admin` deliberately still holds the marking path, because a fresh
+institution reaches it only through registration and would otherwise be unable to
+finish an examination. The trigger for narrowing it is recorded in ADR-010.
+
+### Test Results
+
+- AnswerSheetTest: 14 passed. Issue, reissue, code round trip, tamper refusal, no
+  personal data in the payload, a real PDF, print-size QR readability, tenancy,
+  capability.
+- SheetBatchTest: 11 passed. Queued, 409 on a concurrent run, skip without
+  rotating, partial archive refused, a real ZIP of real PDFs, failure isolation,
+  tenancy.
+- ScanIdentificationTest: 9 passed. Reads a real QR off a real 200dpi A4 canvas,
+  an unreadable page is kept, attaches to the issued sheet, foreign and superseded
+  codes refused, tenancy, and the upload is not held open.
+- ResolveIdentificationTest: 6 passed. Rescues a code where the quick pass does not
+  look, refuses reassignment, refuses to move marks, keeps unreadable pages,
+  escalates a missing file.
+- InstitutionUserTest: 18 passed. Add staff, generated password, rank rule,
+  self-change refused, system_admin unassignable, lockout rule, deactivate, tenancy.
+- RoleAuthorisationTest: 11 passed. A teacher cannot release or amend, an auditor
+  reads only, a scanner cannot read results, a moderator cannot mark, an unknown
+  role fails closed, tenancy.
+- Full suite: 138 passed, 1142 assertions.
+
+### A database lesson worth keeping
+
+Ordering the staff list by `last_name` passed on SQLite and failed on MySQL with
+"Unknown column", because `users` has one `name` column rather than first and
+last. The first implementation also *set* `first_name` and `last_name`, which mass
+assignment dropped silently, so staff were created with no name and nothing errored
+anywhere.
+
+Both are fixed, with tests asserting the name is actually stored on the row and
+that the list arrives ordered. SQLite is permissive in ways MySQL is not, so a
+green suite is not proof a query runs on the production engine.
