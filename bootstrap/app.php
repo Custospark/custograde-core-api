@@ -18,6 +18,10 @@ return Application::configure(basePath: dirname(__DIR__))
         // themselves out of approving the scripts they just uploaded.
         $middleware->alias([
             'limit' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
+            // Answers "are you allowed to do this", which is a different
+            // question from "is this your row". Tenants are already scoped in
+            // every repository; without this a teacher could release results.
+            'capability' => \App\Http\Middleware\RequireCapability::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

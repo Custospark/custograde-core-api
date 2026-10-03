@@ -182,3 +182,64 @@ Frontend types for marks and confidences accept `number | string`, and the
 - An absent mark is null and never zero. "Not marked yet" and "marked zero" are
   different facts in an examination, and collapsing them is how a candidate
   loses a mark.
+
+---
+
+## ADR-006 - Authorisation is a capability matrix, and tenant scope is not authorisation
+
+**Date:** 2026-10-03
+**Status:** Accepted
+**Req:** SEC-07, GOV-03
+
+### Context
+Every controller in the API asked one question about a request: is this row
+visible to the caller's institution. None of them asked whether the caller was
+allowed to do the thing. `users.role` existed as a string, was validated against
+a catalogue, and was then never read again.
+
+The consequence was not subtle. Any authenticated user inside an institution
+could release that institution's results, reopen an approved script, or decide
+marks. An `auditor` and a `scanning_operator` had exactly the same power as an
+examination officer.
+
+### Decision
+Authorisation is a `Capability` matrix in `app/Support/Capability.php`, applied
+per route through `RequireCapability` middleware. It is deliberately separate
+from `visibleTo`, which continues to answer only the tenancy question.
+
+Rules the matrix follows:
+1. Every grant is deliberate, so adding a role never silently inherits anything.
+2. An unrecognised role is granted nothing. A typo in a role column fails
+   closed, and the test suite asserts a role named `wizard` can do nothing at
+   all, including reads.
+3. Read is separated from write throughout, so `VIEW_RESULTS` and
+   `RELEASE_RESULTS` are different capabilities.
+4. Deciding a mark, amending an approved mark, locking, moderating, compiling
+   and releasing are six separate capabilities, not one "marking" permission.
+
+### Rationale
+- Splitting `DECIDE_MARKS` from `AMEND_APPROVED_MARKS` is what stops a marker
+  quietly rewriting approved work, which is the failure a marking system cannot
+  afford and which no amount of audit logging would prevent.
+- Keeping the matrix in one readable file means the answer to "who may release
+  results" is a single lookup rather than a hunt through controllers. Each entry
+  carries the reason it is granted, because a bare list of role names gets
+  edited by someone who cannot see the reasoning.
+- A route that forgets the middleware fails closed by default, since a role with
+  no capability cannot do anything.
+
+### Consequences
+- `institution_admin` is granted the full marking path, including releasing.
+  Self-registration lands on that role, and with no user management there is no
+  way to grant a different one, so denying it would leave a fresh account unable
+  to finish an examination. This is recorded as a known narrowing, not defended:
+  once role assignment exists, that grant should be tightened.
+- `moderator` cannot decide a mark, only moderate, so a moderation decision
+  stays distinguishable from a marking decision as REV-09 requires.
+- `auditor` appears in no write capability anywhere in the file, which is the
+  point of an audit role and is easy to verify by reading one entry.
+- Two of the three separations SEC-07 names are still unimplementable. Appeals
+  (APL) and sheet generation (SHT) do not exist, so "a marker shall not approve
+  an appeal on their own script" has nothing to gate. The appeal rule will need a
+  per-record check rather than a role capability, because it depends on who
+  marked the row.

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\ProcessScriptJob;
 use App\Models\Exam;
 use App\Models\ExamQuestion;
+use App\Models\GradingScheme;
 use App\Models\Script;
 use App\Models\ScriptAnswer;
 use App\Models\User;
@@ -263,5 +264,31 @@ abstract class ScriptMarkingTestCase extends TestCase
             'email' => $email,
             'password' => 'password123',
         ])->assertOk()->json('token');
+    }
+
+    /**
+     * A contiguous four band scheme, because compiling a result without one is
+     * refused by design and a test that needs a graded result has to supply the
+     * scheme first rather than discovering that halfway through.
+     */
+    protected function makeGradingScheme(): GradingScheme
+    {
+        $this->postJson('/api/v1/grading-schemes', [
+            'name' => 'Test Scheme',
+            'pass_mark' => 50,
+            'bands' => [
+                ['grade' => 'A', 'grade_point' => 4, 'min_percent' => 70, 'max_percent' => 100, 'sort_order' => 1],
+                ['grade' => 'B', 'grade_point' => 3, 'min_percent' => 60, 'max_percent' => 69.99, 'sort_order' => 2],
+                ['grade' => 'C', 'grade_point' => 2, 'min_percent' => 50, 'max_percent' => 59.99, 'sort_order' => 3],
+                ['grade' => 'D', 'grade_point' => 1, 'min_percent' => 0, 'max_percent' => 49.99, 'sort_order' => 4],
+            ],
+        ], $this->headers)->assertCreated();
+
+        return GradingScheme::where('name', 'Test Scheme')->firstOrFail();
+    }
+
+    protected function gradingSchemeId(): int
+    {
+        return (int) GradingScheme::where('name', 'Test Scheme')->value('id');
     }
 }

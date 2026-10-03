@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AiHealthController;
 use App\Http\Controllers\Api\ResultController;
 use App\Http\Controllers\Api\ScriptController;
+use App\Support\Capability;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -20,38 +21,54 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth:sanctum')->group(function () {
     // Whether the AI service is reachable and configured (ADM-03). Read often
     // by the dashboard, so it is deliberately unthrottled.
-    Route::get('ai/health', [AiHealthController::class, 'show']);
+    Route::get('ai/health', [AiHealthController::class, 'show'])
+        ->middleware('capability:'.Capability::VIEW_EXAMS);
 
     // Scripts for an examination, newest first.
-    Route::get('exams/{examId}/scripts', [ScriptController::class, 'index']);
+    Route::get('exams/{examId}/scripts', [ScriptController::class, 'index'])
+        ->middleware('capability:'.Capability::VIEW_SCRIPTS);
     Route::post('exams/{examId}/scripts', [ScriptController::class, 'store'])
+        ->middleware('capability:'.Capability::CAPTURE_SCRIPTS)
         ->middleware('limit:uploads');
 
     // The review workspace.
-    Route::get('scripts/{id}', [ScriptController::class, 'show']);
+    Route::get('scripts/{id}', [ScriptController::class, 'show'])
+        ->middleware('capability:'.Capability::VIEW_SCRIPTS);
     // The scan itself, as a short-lived signed URL rather than a stored path.
-    Route::get('scripts/{id}/image', [ScriptController::class, 'image']);
+    Route::get('scripts/{id}/image', [ScriptController::class, 'image'])
+        ->middleware('capability:'.Capability::VIEW_SCRIPTS);
     Route::post('scripts/{id}/reprocess', [ScriptController::class, 'reprocess'])
+        ->middleware('capability:'.Capability::CAPTURE_SCRIPTS)
         ->middleware('limit:results');
 
     // The only route that writes a mark. Every other mark in the system is a
     // proposal until it passes through here with an authenticated person.
     Route::post('scripts/{id}/answers/{answer}/mark', [ScriptController::class, 'decideMark'])
-        ->middleware('limit:marks');
+        ->middleware(['capability:'.Capability::DECIDE_MARKS, 'limit:marks']);
     Route::put('scripts/{id}/answers/{answer}/transcription', [ScriptController::class, 'correctTranscription'])
-        ->middleware('limit:marks');
+        ->middleware(['capability:'.Capability::DECIDE_MARKS, 'limit:marks']);
 
-    Route::post('scripts/{id}/lock', [ScriptController::class, 'lock'])->middleware('limit:approvals');
-    Route::post('scripts/{id}/unlock', [ScriptController::class, 'unlock'])->middleware('limit:approvals');
-    Route::post('scripts/{id}/flag', [ScriptController::class, 'flag'])->middleware('limit:approvals');
+    Route::post('scripts/{id}/lock', [ScriptController::class, 'lock'])
+        ->middleware(['capability:'.Capability::LOCK_SCRIPTS, 'limit:approvals']);
+    Route::post('scripts/{id}/unlock', [ScriptController::class, 'unlock'])
+        // Reopening an approved mark is not the same power as making one, so it
+        // is gated separately (SEC-07).
+        ->middleware(['capability:'.Capability::AMEND_APPROVED_MARKS, 'limit:approvals']);
+    Route::post('scripts/{id}/flag', [ScriptController::class, 'flag'])
+        ->middleware(['capability:'.Capability::FLAG_SCRIPTS, 'limit:approvals']);
 
     // Results.
-    Route::get('exams/{examId}/results', [ResultController::class, 'index']);
-    Route::get('exams/{examId}/results/statistics', [ResultController::class, 'statistics']);
+    Route::get('exams/{examId}/results', [ResultController::class, 'index'])
+        ->middleware('capability:'.Capability::VIEW_RESULTS);
+    Route::get('exams/{examId}/results/statistics', [ResultController::class, 'statistics'])
+        ->middleware('capability:'.Capability::VIEW_RESULTS);
     Route::post('exams/{examId}/results/compile', [ResultController::class, 'compile'])
+        ->middleware('capability:'.Capability::COMPILE_RESULTS)
         ->middleware('limit:results');
     Route::post('exams/{examId}/results/release', [ResultController::class, 'release'])
+        ->middleware('capability:'.Capability::RELEASE_RESULTS)
         ->middleware('limit:results');
     Route::post('exams/{examId}/results/withhold', [ResultController::class, 'withhold'])
+        ->middleware('capability:'.Capability::RELEASE_RESULTS)
         ->middleware('limit:results');
 });

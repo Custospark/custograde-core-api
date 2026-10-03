@@ -24,16 +24,31 @@ class User extends Authenticatable
      * @var list<string>
      */
     public const ROLES = [
-        'system_admin',
-        'institution_admin',
-        'examination_officer',
-        'teacher',
-        'moderator',
-        'scanning_operator',
-        'auditor',
-        'student',
-        'integration_client',
+        self::ROLE_SYSTEM_ADMIN,
+        self::ROLE_INSTITUTION_ADMIN,
+        self::ROLE_EXAMINATION_OFFICER,
+        self::ROLE_TEACHER,
+        self::ROLE_MODERATOR,
+        self::ROLE_SCANNING_OPERATOR,
+        self::ROLE_AUDITOR,
+        self::ROLE_STUDENT,
+        self::ROLE_INTEGRATION_CLIENT,
     ];
+
+    /**
+     * Named role constants, so authorisation code refers to a role rather than
+     * repeating its string. The strings themselves are unchanged: this makes the
+     * existing catalogue type safe without a migration or a data change.
+     */
+    public const ROLE_SYSTEM_ADMIN = 'system_admin';
+    public const ROLE_INSTITUTION_ADMIN = 'institution_admin';
+    public const ROLE_EXAMINATION_OFFICER = 'examination_officer';
+    public const ROLE_TEACHER = 'teacher';
+    public const ROLE_MODERATOR = 'moderator';
+    public const ROLE_SCANNING_OPERATOR = 'scanning_operator';
+    public const ROLE_AUDITOR = 'auditor';
+    public const ROLE_STUDENT = 'student';
+    public const ROLE_INTEGRATION_CLIENT = 'integration_client';
 
     /**
      * Account types a user can register with.
