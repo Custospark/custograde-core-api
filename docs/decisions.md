@@ -354,3 +354,60 @@ created, and then every candidate fails *inside the worker* with a class-not-fou
 error, while the identical code works in tests and in tinker. Answer sheet batch
 printing hit this exactly. The README now says to restart the worker after any
 Composer change, and to suspect it first for that symptom.
+
+---
+
+## ADR-009 - Identification crops to where the code is, and runs one attempt inline
+
+**Date:** 2026-10-03
+**Status:** Accepted
+**Req:** IDN-02, IDN-05, CAP-01
+
+### Context
+Sheets had carried a machine-readable code since SHT-01, but nothing read it.
+Identification was a person choosing a candidate from a dropdown, which is fine
+for one paper and hopeless for thirty. This makes the scan identify itself.
+
+### Decision
+`ScanIdentifier` decodes the code off the stored image and `capture()` attaches
+the scan to the row the issued sheet already created. Two measurements shaped it.
+
+Decoding the whole page does not work. The code is 16mm on a 210mm sheet, so it
+covers about 120 pixels of a 1654 pixel wide page, and the detector reported
+"could not find enough finder patterns" after 14 seconds and 300MB. Enlarging the
+page first was worse: a 3x upscale asked for a 34 megapixel buffer and exhausted
+a 1GB limit outright. Cropping to the region the code occupies decoded it exactly,
+in 1.3 seconds and 82MB.
+
+The capture path then makes exactly one attempt: our own template, one region,
+one variant. That reads a code in about 1.4 seconds and, more importantly, gives
+up quickly instead of making an operator watch a spinner on a bad scan. The
+thorough search, 1.6s on success and 17.6s when nothing on the page reads, is
+available for a deeper pass afterwards.
+
+### Rationale
+- Identification happens **before** a row is created. Issuing a sheet already made
+  one, so identifying afterwards would leave two rows claiming one paper and
+  results would have no way to choose between them.
+- The signature is verified before any lookup, so a random string that happens to
+  scan, or another school's code, never reaches the database.
+- A match is scoped to this examination, to codes with no file yet, and to sheets
+  that are still current. A superseded code therefore cannot attach, which is what
+  makes a reissue mean anything.
+- A page that reads as nothing returns null rather than raising. "We could not
+  read this one" is an ordinary outcome that routes the paper to the exception
+  queue; an exception here would lose a real script (IDN-05).
+
+### Consequences
+- A scan that cannot be identified still uploads, keeps any operator-chosen
+  candidate, and is flagged. Nothing is refused.
+- A candidate whose sheet was issued is never asked about at upload time, which is
+  the point of the feature. Verified live: a scan attached to the issued row and
+  resolved to the right candidate with no operator input.
+- Only raster images are attempted. A PDF upload stays unidentified rather than
+  failing, because decoding one means rasterising it, which is page assembly
+  (IDN-01) and a separate piece of work.
+- `ScanIdentificationTest` draws a real QR onto a real 200dpi A4 canvas at the
+  template's position and size, then uploads those bytes. Nothing is stubbed,
+  because the whole risk is in the image handling and a mock would pass happily
+  while the detector read nothing.

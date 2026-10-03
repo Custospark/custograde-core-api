@@ -23,10 +23,14 @@ use Illuminate\Validation\ValidationException;
  *
  * A capture is attributed to a person and a moment, so a paper that later turns
  * out to belong to someone else can be traced. For now the student is chosen by
- * the operator rather than decoded from a QR code, because identification
- * (IDN-02) is still OpenCV work. A script with no student is kept and flagged
- * rather than refused, because refusing it would lose the paper entirely, which
- * is precisely how scripts go missing (IDN-05).
+ * a script with no student is kept and flagged rather than refused, because
+ * refusing it would lose the paper entirely, which is precisely how scripts go
+ * missing (IDN-05).
+ *
+ * The candidate is normally not chosen by the operator at all. The code on the
+ * issued sheet is read off the scan (IDN-02) and the paper attaches to the row
+ * that sheet created. When the code cannot be read the operator can still pick,
+ * and if neither happens the paper is kept for the exception queue.
  */
 class ScriptCaptureService
 {
@@ -92,31 +96,64 @@ class ScriptCaptureService
 
         $expectedPages = max(1, (int) ($meta['expected_page_count'] ?? 1));
 
+        /*
+         * IDN-02: read the code off the page and attach the scan to the sheet it
+         * came from.
+         *
+         * This has to happen before a row is created, because issuing a sheet
+         * already made one. Identifying afterwards would leave two rows claiming
+         * one paper, and results would have no way to choose between them.
+         *
+         * The quick single-attempt search is used deliberately. A full search
+         * costs up to eighteen seconds on a page where nothing reads, which is
+         * not something to make an operator sit through on upload. Anything it
+         * misses keeps its placeholder row and gets the deeper queued search.
+         */
+        $identified = $this->identify($storage->path($path), $mime);
+        $issued = $identified === null
+            ? null
+            : $this->issuedScriptFor($exam, $identified['code']);
+
         try {
-            $script = DB::transaction(fn (): Script => Script::query()->create([
-                'institution_id' => $exam->institution_id,
-                'owner_user_id' => $exam->owner_user_id,
-                'exam_id' => $exam->id,
-                'student_id' => $studentId,
-                'code' => $code,
-                'status' => Script::STATUS_UPLOADED,
-                'original_disk' => $this->disk,
-                'original_path' => $path,
-                'original_hash' => $hash,
-                'original_name' => $file->getClientOriginalName(),
-                'mime_type' => $mime,
-                'size_bytes' => strlen($bytes),
-                'page_count' => max(1, (int) ($meta['page_number'] ?? 1)),
-                'expected_page_count' => $expectedPages,
-                // MRK-01: the denominator comes from the paper, not from the
-                // marks, so a teacher can see "0 of 13" from the moment the
-                // script is captured. Leaving it at zero until the first mark
-                // was decided made an untouched paper look like an empty one.
-                'total_mark' => 0,
-                'max_mark' => $this->paperMaxMark($exam),
-                'created_by' => $actor->id,
-                'updated_by' => $actor->id,
-            ]));
+            $script = $issued !== null
+                // The paper belongs to a sheet we issued. Fill that row in rather
+                // than creating a second one, and keep the candidate it was
+                // issued to, which is the whole point of having issued it.
+                ? $this->attachToIssued($issued, [
+                    'student_id' => $issued->student_id ?? $studentId,
+                    'path' => $path,
+                    'hash' => $hash,
+                    'name' => $file->getClientOriginalName(),
+                    'mime' => $mime,
+                    'bytes' => strlen($bytes),
+                    'pages' => max(1, (int) ($meta['page_number'] ?? 1)),
+                    'expected_pages' => $identified['total'] ?? $expectedPages,
+                    'actor' => $actor,
+                ])
+                : DB::transaction(fn (): Script => Script::query()->create([
+                    'institution_id' => $exam->institution_id,
+                    'owner_user_id' => $exam->owner_user_id,
+                    'exam_id' => $exam->id,
+                    'student_id' => $studentId,
+                    'code' => $code,
+                    'status' => Script::STATUS_UPLOADED,
+                    'original_disk' => $this->disk,
+                    'original_path' => $path,
+                    'original_hash' => $hash,
+                    'original_name' => $file->getClientOriginalName(),
+                    'mime_type' => $mime,
+                    'size_bytes' => strlen($bytes),
+                    'page_count' => max(1, (int) ($meta['page_number'] ?? 1)),
+                    'expected_page_count' => $expectedPages,
+                    // MRK-01: the denominator comes from the paper, not from the
+                    // marks, so a teacher can see "0 of 13" from the moment the
+                    // script is captured. Leaving it at zero until the first mark
+                    // was decided made an untouched paper look like an empty one.
+                    'total_mark' => 0,
+                    'max_mark' => $this->paperMaxMark($exam),
+                    'created_by' => $actor->id,
+                    'updated_by' => $actor->id,
+                ]));
         } catch (\Throwable $exception) {
             // Do not leave an orphan file behind if the row could not be written.
             $storage->delete($path);
@@ -196,6 +233,74 @@ class ScriptCaptureService
     /**
      * A student from this tenant, or null when the operator could not say.
      */
+    /**
+     * Read the code off a stored scan. Any failure means "unidentified", which
+     * is an ordinary outcome and never an error worth raising here.
+     *
+     * @return array{code: string, page: int, total: int}|null
+     */
+    private function identify(string $absolutePath, string $mime): ?array
+    {
+        try {
+            return app(ScanIdentifier::class)->identifyFromPath($absolutePath, $mime);
+        } catch (\Throwable $exception) {
+            Log::warning('Scan identification failed unexpectedly', [
+                'reason' => $exception->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * The issued sheet row for a scanned code, if this examination issued one.
+     *
+     * Scoped to the examination and to codes we actually issued with a live
+     * sheet, so a signature-valid code from another paper or a superseded one
+     * cannot attach a scan to the wrong script.
+     */
+    private function issuedScriptFor(Exam $exam, string $code): ?Script
+    {
+        return Script::query()
+            ->where('exam_id', $exam->id)
+            ->where('code', $code)
+            ->whereNull('original_path')
+            ->whereHas('sheets', fn ($query) => $query->whereNull('invalidated_at'))
+            ->first();
+    }
+
+    /**
+     * Fill in a sheet that was issued ahead of the scan arriving.
+     *
+     * @param  array{student_id: ?int, path: string, hash: string, name: string, mime: string, bytes: int, pages: int, expected_pages: int, actor: User}  $scan
+     */
+    private function attachToIssued(Script $script, array $scan): Script
+    {
+        return DB::transaction(function () use ($script, $scan): Script {
+            $script->forceFill([
+                'student_id' => $scan['student_id'],
+                'original_disk' => $this->disk,
+                'original_path' => $scan['path'],
+                'original_hash' => $scan['hash'],
+                'original_name' => $scan['name'],
+                'mime_type' => $scan['mime'],
+                'size_bytes' => $scan['bytes'],
+                'page_count' => $scan['pages'],
+                'expected_page_count' => $scan['expected_pages'],
+                'status' => Script::STATUS_UPLOADED,
+                'total_mark' => 0,
+                'max_mark' => $this->paperMaxMark($script->exam),
+                'created_by' => $script->created_by ?? $scan['actor']->id,
+                'updated_by' => $scan['actor']->id,
+                // The sheet was issued and then the paper arrived, so there is
+                // nothing left to explain to a marker.
+                'flag_note' => null,
+            ])->save();
+
+            return $script->refresh();
+        });
+    }
+
     private function resolveStudent(Exam $exam, ?int $studentId): ?int
     {
         if ($studentId === null) {
