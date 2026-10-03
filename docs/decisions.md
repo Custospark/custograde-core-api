@@ -243,3 +243,58 @@ Rules the matrix follows:
   an appeal on their own script" has nothing to gate. The appeal rule will need a
   per-record check rather than a role capability, because it depends on who
   marked the row.
+
+---
+
+## ADR-007 - Sheet codes are short and signed, not encrypted
+
+**Date:** 2026-10-03
+**Status:** Accepted
+**Req:** SHT-02, SHT-08, IDN-02
+
+### Context
+SHT-02 requires the code printed on an answer sheet to contain "only an opaque
+script identifier with a check value and signature", and forbids embedding
+personal data. It does not require confidentiality.
+
+The first implementation encrypted the payload with `Crypt::encryptString` as
+well as signing it, reasoning that hiding the script numbering was worth having.
+
+### Decision
+The payload is the script's existing opaque code, the page number, the page
+total, and a twelve character HMAC. No encryption.
+
+### Rationale
+This was found by measuring rather than by reading. A QR symbol spreads its
+payload across its module count, and a 220 character encrypted payload needs
+roughly a hundred modules across. Printed at 16mm and scanned at 300dpi, which
+is ordinary A4 handling with a phone, that symbol was **unreadable**. The short
+signed payload decodes at the same size.
+
+The original code was correct against SHT-02 and broken against SHT-08, and it
+failed silently: the value still decoded in memory and the PDF still rendered,
+so nothing short of printing it and reading the pixels back would have caught it
+before an examination day.
+
+The lesson is recorded because it is easy to repeat. A QR has a module budget,
+and spending it on confidentiality trades away the thing the code exists to do.
+SHT-02 wanted opacity and authenticity, both of which the HMAC provides, since
+the script code is already unguessable.
+
+### Consequences
+- `AnswerSheetTest::test_the_encoded_qr_is_readable_at_the_size_it_is_printed`
+  renders the real payload at 16mm, downsamples it to 300dpi, and reads the
+  pixels back. Lengthening the payload fails that test. Verified by injecting a
+  220 character payload and watching it fail.
+- The payload names a script code rather than a numeric id, so resolving it to a
+  script is a tenant-scoped query performed by the caller that holds a user,
+  rather than something the code service can do on its own.
+- Sheet codes are guessable by anyone holding a photograph, since they are
+  derived from a printed code rather than a secret. That is acceptable: the code
+  resolves only within one institution, and the signature still rejects codes we
+  never issued.
+- `scripts.original_path`, `original_hash` and `original_name` became nullable,
+  because issuing a sheet creates a script row before any paper exists. Filling
+  them with placeholders was rejected: a placeholder path is a lie later code
+  cannot distinguish from a real file, and would surface as a signed image URL
+  that 404s at the worst moment.

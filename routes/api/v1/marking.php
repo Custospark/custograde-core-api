@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\AnswerSheetController;
 use App\Http\Controllers\Api\AiHealthController;
 use App\Http\Controllers\Api\ResultController;
 use App\Http\Controllers\Api\ScriptController;
@@ -58,6 +59,17 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware(['capability:'.Capability::FLAG_SCRIPTS, 'limit:approvals']);
 
     // Results.
+    // Answer sheets (SHT). Issuing a sheet creates the script row up front,
+    // which is what makes a scan resolvable to a candidate later on (IDN-02).
+    Route::get('exams/{examId}/sheets', [AnswerSheetController::class, 'index'])
+        ->middleware('capability:'.Capability::VIEW_EXAMS);
+    Route::post('exams/{examId}/sheets', [AnswerSheetController::class, 'store'])
+        ->middleware('capability:'.Capability::BUILD_ANSWER_SHEETS);
+    Route::post('exams/{examId}/sheets/{scriptId}/reissue', [AnswerSheetController::class, 'reissue'])
+        ->middleware('capability:'.Capability::BUILD_ANSWER_SHEETS);
+    Route::get('exams/{examId}/sheets/{scriptId}', [AnswerSheetController::class, 'download'])
+        ->middleware('capability:'.Capability::BUILD_ANSWER_SHEETS);
+
     Route::get('exams/{examId}/results', [ResultController::class, 'index'])
         ->middleware('capability:'.Capability::VIEW_RESULTS);
     Route::get('exams/{examId}/results/statistics', [ResultController::class, 'statistics'])

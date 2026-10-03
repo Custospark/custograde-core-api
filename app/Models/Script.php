@@ -26,6 +26,16 @@ class Script extends Model
     use BelongsToTenant;
     use HasFactory;
 
+    /**
+     * An answer sheet has been issued and no scan has arrived yet.
+     *
+     * This sits outside the marking lifecycle on purpose. `uploaded` means a
+     * paper exists on disk, whereas `issued` means only a code is in circulation,
+     * so treating one as the other would put every un-handed-in script into the
+     * transcriber queue with no file to read.
+     */
+    public const STATUS_ISSUED = 'issued';
+
     /** Files are on disk but pages have not been cut yet. */
     public const STATUS_UPLOADED = 'uploaded';
 
@@ -51,6 +61,7 @@ class Script extends Model
      * @var list<string>
      */
     public const STATUSES = [
+        self::STATUS_ISSUED,
         self::STATUS_UPLOADED,
         self::STATUS_TRANSCRIBING,
         self::STATUS_SUGGESTED,
@@ -58,6 +69,19 @@ class Script extends Model
         self::STATUS_READY_TO_LOCK,
         self::STATUS_LOCKED,
         self::STATUS_FLAGGED,
+    ];
+
+    /**
+     * Codes in circulation with no paper behind them yet (SHT-01).
+     *
+     * Kept out of BUSY_STATUSES on purpose: a marker opening the queue should not
+     * be shown forty scripts that exist only as printed codes, because there is
+     * nothing on them to mark.
+     *
+     * @var list<string>
+     */
+    public const AWAITING_SCAN_STATUSES = [
+        self::STATUS_ISSUED,
     ];
 
     /**
