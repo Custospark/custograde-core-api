@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AnswerSheetController;
 use App\Http\Controllers\Api\AiHealthController;
+use App\Http\Controllers\Api\InstitutionUserController;
 use App\Http\Controllers\Api\ResultController;
 use App\Http\Controllers\Api\ScriptController;
 use App\Support\Capability;
@@ -20,6 +21,18 @@ use Illuminate\Support\Facades\Route;
 | and this is where a teacher accepts, adjusts or rejects (BR-02).
 */
 Route::middleware('auth:sanctum')->group(function () {
+    // Staff and roles (AUT-05, SEC-07). This is what makes the capability matrix
+    // usable: roles could be validated but never assigned, so every account that
+    // existed was an administrator.
+    Route::get('institution/users', [InstitutionUserController::class, 'index'])
+        ->middleware('capability:'.Capability::MANAGE_INSTITUTION_USERS);
+    Route::post('institution/users', [InstitutionUserController::class, 'store'])
+        ->middleware('capability:'.Capability::MANAGE_INSTITUTION_USERS);
+    Route::put('institution/users/{id}/role', [InstitutionUserController::class, 'updateRole'])
+        ->middleware('capability:'.Capability::MANAGE_INSTITUTION_USERS);
+    Route::delete('institution/users/{id}', [InstitutionUserController::class, 'deactivate'])
+        ->middleware('capability:'.Capability::MANAGE_INSTITUTION_USERS);
+
     // Whether the AI service is reachable and configured (ADM-03). Read often
     // by the dashboard, so it is deliberately unthrottled.
     Route::get('ai/health', [AiHealthController::class, 'show'])

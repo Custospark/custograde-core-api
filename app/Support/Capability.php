@@ -85,6 +85,16 @@ final class Capability
     public const VIEW_AI_REPORTS = 'view_ai_reports';
 
     /**
+     * Add staff to the institution and change what they may do.
+     *
+     * Separate from everything else because it is the capability that decides
+     * who holds the others. Granting it to a role lets that role mint accounts
+     * with capabilities it does not itself hold, so it is granted only to
+     * administrators and never to `system_admin`, who has no institution.
+     */
+    public const MANAGE_INSTITUTION_USERS = 'manage_institution_users';
+
+    /**
      * Every capability the application knows about. Used by the test suite to
      * prove the matrix below grants nothing that is not declared here, so a
      * capability added to a role but never declared cannot pass unnoticed.
@@ -113,6 +123,7 @@ final class Capability
         self::VIEW_AUDIT_TRAIL,
         self::MANAGE_AI_CONFIGURATION,
         self::VIEW_AI_REPORTS,
+        self::MANAGE_INSTITUTION_USERS,
     ];
 
     /**
@@ -148,6 +159,7 @@ final class Capability
             self::RELEASE_RESULTS,
             self::VIEW_AUDIT_TRAIL,
             self::VIEW_AI_REPORTS,
+            self::MANAGE_INSTITUTION_USERS,
         ],
 
         // Owns an examination end to end and is accountable for it. This is the
@@ -231,11 +243,85 @@ final class Capability
     ];
 
     /**
-     * Capabilities granted to a role. An unrecognised role returns nothing, so a
-     * bad value fails closed rather than open.
+     * How much authority each role carries, highest first.
      *
-     * @return list<string>
+     * Exists because "you may not grant a role you do not hold" cannot be
+     * expressed as a capability check: a role is not a capability, so asking
+     * whether somebody holds the capability named `teacher` is meaningless and
+     * always false.
+     *
+     * The rule it supports is the one that matters when roles can be assigned:
+     * you may hand out a role only at or below your own. Without it, anybody who
+     * can reach staff management could appoint themselves an institution
+     * administrator, and an audit trail full of self-promotions is worse than no
+     * audit trail because it looks like oversight.
+     *
+     * @var array<string, int>
      */
+    private const ROLE_RANK = [
+        User::ROLE_SYSTEM_ADMIN => 100,
+        User::ROLE_INSTITUTION_ADMIN => 80,
+        User::ROLE_EXAMINATION_OFFICER => 60,
+        User::ROLE_MODERATOR => 50,
+        User::ROLE_TEACHER => 40,
+        User::ROLE_SCANNING_OPERATOR => 30,
+        User::ROLE_AUDITOR => 20,
+        User::ROLE_STUDENT => 10,
+        User::ROLE_INTEGRATION_CLIENT => 0,
+    ];
+
+    /**
+     * May this role hand out that one?
+     *
+     * An unknown role on either side is refused, so a bad value fails closed.
+     */
+    public static function canGrantRole(?string $actorRole, ?string $targetRole): bool
+    {
+        if ($actorRole === null || $targetRole === null) {
+            return false;
+        }
+
+        if (! array_key_exists($actorRole, self::ROLE_RANK) || ! array_key_exists($targetRole, self::ROLE_RANK)) {
+            return false;
+        }
+
+        return self::ROLE_RANK[$actorRole] >= self::ROLE_RANK[$targetRole];
+    }
+
+/**
+ * Capabilities granted to a role. An unrecognised role returns nothing, so a
+ * bad value fails closed rather than open.
+ *
+ * @return list<string>
+ */
+/**
+ * Would this change leave the institution with nobody who can manage staff?
+ *
+ * A pure predicate rather than an inline check, because the case that matters is
+ * currently unreachable through the API: while only administrators hold
+ * MANAGE_INSTITUTION_USERS, the acting administrator always counts as a remaining
+ * one, so the guard can never fire. It becomes reachable the moment staff
+ * management is widened to a lesser role, which is a plausible change, so the
+ * guard stays.
+ *
+ * Extracting it lets the rule be tested honestly, instead of a test pretending an
+ * unreachable path is covered, and it keeps the "who counts as remaining" question
+ * beside the rest of the role knowledge.
+ *
+ * @param  int  $remainingAdministrators  active administrators other than the target
+ */
+    public static function wouldLockOutInstitution(
+        string $targetCurrentRole,
+        string $newRole,
+        int $remainingAdministrators,
+    ): bool {
+        if ($targetCurrentRole !== User::ROLE_INSTITUTION_ADMIN) {
+            return false;
+        }
+
+        return $newRole !== User::ROLE_INSTITUTION_ADMIN && $remainingAdministrators === 0;
+    }
+
     public static function permissionsFor(?string $role): array
     {
         if ($role === null) {

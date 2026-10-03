@@ -411,3 +411,72 @@ available for a deeper pass afterwards.
   template's position and size, then uploads those bytes. Nothing is stubbed,
   because the whole risk is in the image handling and a mock would pass happily
   while the detector read nothing.
+
+---
+
+## ADR-010 - Roles are assigned by rank, and a generated password is not an emailed one
+
+**Date:** 2026-10-03
+**Status:** Accepted
+**Req:** AUT-05, SEC-07
+
+### Context
+The capability matrix from ADR-006 was unusable in practice. Roles could be
+validated but never assigned, so every account that existed was an
+`institution_admin` created by registration. That is why ADR-006 had to grant
+institution administrators the full marking path: denying it left a school
+unable to finish an examination, because there was no way to give them a
+different role.
+
+### Decision
+An institution can add staff, change their role and deactivate them, guarded by a
+privilege ranking rather than a capability check.
+
+### Rationale
+The first attempt expressed the rule as "you may not grant a role you do not hold"
+and checked it with `Capability::allows($actorRole, $targetRole)`. That is
+meaningless: a role is not a capability, so the check always failed and no
+staff could be added at all. The rule needed authority, which is what `ROLE_RANK`
+now expresses. An actor may hand out a role only at or below their own.
+
+Four guards, each closing a specific escalation:
+- **Rank.** An officer may appoint teachers and moderators, not administrators.
+- **`system_admin` is unassignable inside a tenant.** It answers to nobody there,
+  so granting it from inside one creates an account with no accountable owner.
+- **Nobody changes their own role.** Otherwise a moderator promotes themselves and
+  the audit trail becomes a record of decisions nobody had to justify.
+- **The last administrator is protected.** An institution that cannot manage staff
+  has no way back in short of a database console.
+
+A generated password is returned once and flagged `must_change_password`, rather
+than chosen by an administrator and emailed. A password an administrator picks is
+a shared secret from the day it is sent, and often survives in the mail thread for
+years.
+
+### Consequences
+- Deactivation, not deletion. A mark somebody approved is part of the record of
+  how that mark came about, and deleting the person leaves an audit trail pointing
+  at nobody (SEC-06).
+- The lockout guard is currently **unreachable through the API**, because the
+  acting administrator always counts as a remaining administrator. It is kept
+  because the guard becomes live the moment staff management is widened to a
+  lesser role. It is extracted as `Capability::wouldLockOutInstitution` and tested
+  as a pure rule, rather than a test pretending an unreachable path is covered.
+- **`institution_admin` still holds the marking path, deliberately.** Narrowing it
+  is now *possible*, which was the point of this work, but doing it today would mean
+  a brand new institution must register, appoint a marker, and only then mark
+  their first paper. The benefit is theoretical while appeals do not exist, and the
+  cost lands on every first-day user. The trigger for narrowing is the arrival of
+  appeals (APL) or sheet generation (SHT), where SEC-07's other two separations
+  become real.
+
+### A bug this work exposed
+
+Ordering the staff list by `last_name` passed on SQLite and failed on MySQL with
+"Unknown column". The `users` table has one `name` column, not first and last, and
+the first implementation also *set* `first_name` and `last_name`, which mass
+assignment dropped silently: staff were being created with no name at all and no
+error anywhere. Both are fixed, and there is now a test asserting the name is
+actually stored on the row, plus one asserting the list arrives ordered. Worth
+recording as a class of bug: SQLite is permissive in ways MySQL is not, so a green
+test suite is not proof a query runs on the production engine.
