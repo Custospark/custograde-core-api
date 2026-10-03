@@ -176,8 +176,13 @@ class AnswerSheetController extends Controller
                 'page_count' => $sheet->page_count,
                 'current' => $sheet->isCurrent(),
                 'invalidated_at' => $sheet->invalidated_at?->toIso8601String(),
-                'invalidation_reason' => $sheet->invalidation_reason,
-                'candidate' => $sheet->script?->student?->full_name,
+                'invalidated_reason' => $sheet->invalidation_reason,
+                // Assembled here, not read as `full_name`. StudentResource
+                // documents that names are computed rather than stored, so the
+                // model has no such attribute and reading one yields null. That
+                // showed every issued sheet as "Unassigned" while the same
+                // candidates were listed as having no sheet at all.
+                'candidate' => $this->candidateName($sheet->script?->student),
             ]);
 
         return response()->json(['sheets' => $sheets]);
@@ -348,6 +353,24 @@ class AnswerSheetController extends Controller
             'started_at' => $batch->started_at?->toIso8601String(),
             'finished_at' => $batch->finished_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * A candidate's name for a sheet listing.
+     *
+     * Built from the stored parts because `StudentResource` computes names
+     * rather than storing them, and a sheet is printed before any resource is
+     * ever resolved for it.
+     */
+    private function candidateName(?Student $student): ?string
+    {
+        if ($student === null) {
+            return null;
+        }
+
+        $name = trim($student->first_name.' '.$student->last_name);
+
+        return $name === '' ? null : $name;
     }
 
     private function findBatchOrRefuse(Exam $exam, int $batchId): SheetBatch|JsonResponse

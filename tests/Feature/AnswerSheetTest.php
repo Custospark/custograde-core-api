@@ -292,6 +292,60 @@ class AnswerSheetTest extends ScriptMarkingTestCase
         $this->assertSame($script->code, $codes->decode($decoded)['code']);
     }
 
+    public function test_the_sheet_list_names_the_candidate_it_belongs_to(): void
+    {
+        $exam = $this->makeExam();
+        $studentId = $this->makeStudent($exam);
+
+        $sheet = $this->postJson("/api/v1/exams/{$exam->id}/sheets", [
+            'student_id' => $studentId,
+        ], $this->headers)->assertCreated()->json('sheet');
+
+        $listed = $this->getJson("/api/v1/exams/{$exam->id}/sheets", $this->headers)
+            ->assertOk()
+            ->json('sheets');
+
+        $this->assertCount(1, $listed);
+        $this->assertSame($sheet['code'], $listed[0]['code']);
+
+        // Regression: `StudentResource` computes names rather than storing them,
+        // so reading a `full_name` attribute off the model yields null. Every
+        // issued sheet then showed as "Unassigned" while the same candidates
+        // were listed as having no sheet at all, which is a contradiction a
+        // teacher cannot act on.
+        $this->assertSame(
+            'Amina Nakato',
+            $listed[0]['candidate'],
+            'A sheet must name the candidate it was issued to.'
+        );
+    }
+
+    public function test_a_sheet_list_shows_a_candidate_and_reports_it_current(): void
+    {
+        $exam = $this->makeExam();
+        $studentId = $this->makeStudent($exam);
+
+        $first = $this->postJson("/api/v1/exams/{$exam->id}/sheets", [
+            'student_id' => $studentId,
+        ], $this->headers)->assertCreated()->json('sheet');
+
+        $this->postJson("/api/v1/exams/{$exam->id}/sheets/{$first['script_id']}/reissue", [
+            'reason' => 'Misprinted.',
+        ], $this->headers)->assertCreated();
+
+        $listed = $this->getJson("/api/v1/exams/{$exam->id}/sheets", $this->headers)
+            ->assertOk()
+            ->json('sheets');
+
+        $this->assertCount(2, $listed);
+        $this->assertCount(1, array_filter($listed, fn ($sheet) => $sheet['current'] === true));
+        $this->assertCount(1, array_filter($listed, fn ($sheet) => $sheet['current'] === false));
+
+        foreach ($listed as $sheet) {
+            $this->assertSame('Amina Nakato', $sheet['candidate']);
+        }
+    }
+
     // --- SHT-06: reissue ------------------------------------------------------
 
     public function test_reissuing_invalidates_the_earlier_code_and_records_why(): void

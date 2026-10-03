@@ -240,8 +240,7 @@ class InstitutionUserController extends Controller
     {
         return [
             'id' => $member->id,
-            'full_name' => $member->name,
-            'email' => $member->email,
+            'full_name' => $member->name,            'email' => $member->email,
             'phone' => $member->phone,
             'role' => $member->role,
             'is_active' => (bool) $member->is_active,
