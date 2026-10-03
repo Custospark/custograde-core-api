@@ -65,6 +65,13 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('capability:'.Capability::VIEW_EXAMS);
     Route::post('exams/{examId}/sheets', [AnswerSheetController::class, 'store'])
         ->middleware('capability:'.Capability::BUILD_ANSWER_SHEETS);
+    // Batch printing (SHT-05). Async, so the client polls the batch for progress.
+    Route::post('exams/{examId}/sheets/batch', [AnswerSheetController::class, 'batch'])
+        ->middleware('capability:'.Capability::BUILD_ANSWER_SHEETS);
+    Route::get('exams/{examId}/sheets/batch/{batchId}', [AnswerSheetController::class, 'batchStatus'])
+        ->middleware('capability:'.Capability::BUILD_ANSWER_SHEETS);
+    Route::get('exams/{examId}/sheets/batch/{batchId}/download', [AnswerSheetController::class, 'batchDownload'])
+        ->middleware('capability:'.Capability::BUILD_ANSWER_SHEETS);
     Route::post('exams/{examId}/sheets/{scriptId}/reissue', [AnswerSheetController::class, 'reissue'])
         ->middleware('capability:'.Capability::BUILD_ANSWER_SHEETS);
     Route::get('exams/{examId}/sheets/{scriptId}', [AnswerSheetController::class, 'download'])

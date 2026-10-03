@@ -3,15 +3,19 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\GenerateSheetBatchJob;
 use App\Models\Exam;
 use App\Models\Script;
 use App\Models\ScriptSheet;
+use App\Models\SheetBatch;
 use App\Models\Student;
 use App\Services\AnswerSheetService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -217,6 +221,149 @@ class AnswerSheetController extends Controller
      * printed fallback quotes, so leaving it unchanged would leave a withdrawn
      * sheet still resolvable.
      */
+    /**
+     * Start printing the whole class (SHT-05).
+     *
+     * Queued rather than synchronous: rendering one A4 sheet costs about a
+     * second, so thirty candidates is half a minute of CPU that does not belong
+     * in a web request. The response is the batch, and the client polls it.
+     */
+    public function batch(Request $request, int $examId): JsonResponse
+    {
+        $exam = $this->findExamOrRefuse($examId, $request);
+
+        if (! $exam instanceof Exam) {
+            return $exam;
+        }
+
+        // Refuse a second run while one is in flight. Two concurrent batches
+        // would race on the same candidates, and the loser's sheets would be
+        // rotated out from under a school that had already printed them.
+        $running = SheetBatch::where('exam_id', $exam->id)
+            ->whereIn('status', [SheetBatch::STATUS_QUEUED, SheetBatch::STATUS_RUNNING])
+            ->first();
+
+        if ($running !== null) {
+            return response()->json([
+                'message' => 'Sheets for this paper are already being printed. Wait for that to finish.',
+                'batch' => $this->present($running),
+            ], 409);
+        }
+
+        $batch = SheetBatch::create([
+            'exam_id' => $exam->id,
+            'institution_id' => $exam->institution_id,
+            'status' => SheetBatch::STATUS_QUEUED,
+            'requested_by' => $request->user()?->id,
+        ]);
+
+        GenerateSheetBatchJob::dispatch($batch->id);
+
+        return response()->json(['batch' => $this->present($batch)], 202);
+    }
+
+    /**
+     * How far the batch has got, and which candidates failed (SHT-05).
+     */
+    public function batchStatus(Request $request, int $examId, int $batchId): JsonResponse
+    {
+        $exam = $this->findExamOrRefuse($examId, $request);
+
+        if (! $exam instanceof Exam) {
+            return $exam;
+        }
+
+        $batch = $this->findBatchOrRefuse($exam, $batchId);
+
+        if (! $batch instanceof SheetBatch) {
+            return $batch;
+        }
+
+        return response()->json(['batch' => $this->present($batch)]);
+    }
+
+    /**
+     * Download the finished archive (SHT-05).
+     *
+     * Refused until the batch completes, because a partial ZIP opens cleanly and
+     * a teacher would print it believing the class was covered.
+     */
+    public function batchDownload(Request $request, int $examId, int $batchId): StreamedResponse|JsonResponse
+    {
+        $exam = $this->findExamOrRefuse($examId, $request);
+
+        if (! $exam instanceof Exam) {
+            return $exam;
+        }
+
+        $batch = $this->findBatchOrRefuse($exam, $batchId);
+
+        if (! $batch instanceof SheetBatch) {
+            return $batch;
+        }
+
+        if (! $batch->hasArchive()) {
+            return response()->json([
+                'message' => $batch->isFinished()
+                    ? 'This run produced no printable sheets, so there is nothing to download.'
+                    : 'Sheets are still being printed. The download appears when the run finishes.',
+            ], 409);
+        }
+
+        $disk = Storage::disk($batch->disk);
+
+        if (! $disk->exists($batch->archive_path)) {
+            return response()->json([
+                'message' => 'That archive is no longer available. Print the class again.',
+            ], 410);
+        }
+
+        // Storage::download rather than a hand-rolled stream: the archive is already a
+        // file on disk, and this streams it with the right headers without
+        // buffering a ZIP that can be tens of megabytes into memory.
+        return Storage::disk($batch->disk)->download(
+            $batch->archive_path,
+            sprintf('answer-sheets-%s.zip', $batch->id)
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function present(SheetBatch $batch): array
+    {
+        return [
+            'id' => $batch->id,
+            'status' => $batch->status,
+            // Cast, because these are unset rather than zero on a freshly
+            // created row, and a counter that arrives as null forces the client
+            // to handle a case that never means anything.
+            'total' => (int) $batch->total,
+            'processed' => (int) $batch->processed,
+            'skipped' => (int) $batch->skipped,
+            'failed' => (int) $batch->failed,
+            'progress_percent' => $batch->progressPercent(),
+            'errors' => $batch->errors ?? [],
+            'downloadable' => $batch->hasArchive(),
+            'started_at' => $batch->started_at?->toIso8601String(),
+            'finished_at' => $batch->finished_at?->toIso8601String(),
+        ];
+    }
+
+    private function findBatchOrRefuse(Exam $exam, int $batchId): SheetBatch|JsonResponse
+    {
+        $batch = SheetBatch::where('id', $batchId)
+            ->where('exam_id', $exam->id)
+            ->where('institution_id', $exam->institution_id)
+            ->first();
+
+        if (! $batch instanceof SheetBatch) {
+            return response()->json(['message' => 'We could not find that print run.'], 404);
+        }
+
+        return $batch;
+    }
+
     private function issueSheet(Script $script, int $pages, Request $request): ScriptSheet
     {
         $script->forceFill(['code' => $this->generateCode($script->exam_id)])->save();

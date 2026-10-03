@@ -298,3 +298,59 @@ the script code is already unguessable.
   them with placeholders was rejected: a placeholder path is a lie later code
   cannot distinguish from a real file, and would surface as a signed image URL
   that 404s at the worst moment.
+
+---
+
+## ADR-008 - A repeated "print the class" skips candidates, and never rotates a live code
+
+**Date:** 2026-10-03
+**Status:** Accepted
+**Req:** SHT-05, SHT-06
+
+### Context
+SHT-05 asks for sheets for a whole class in one asynchronous batch with progress
+reporting and a single download. It says nothing about what happens when someone
+presses the button twice, which is the likeliest thing a user does.
+
+### Decision
+A candidate who already holds a current sheet is counted as `skipped` and their
+existing code is left alone. A second run is refused outright while one is in
+flight, with 409.
+
+### Rationale
+Rotating codes on a repeat run would invalidate every sheet already printed and
+sitting in a box at the school. Nothing would report an error: the new sheets
+would be valid, the old ones would simply stop resolving, and the failure would
+surface as unidentified scans days later during marking.
+
+Two related decisions in the same area, for the same reason:
+
+- A candidate who fails is recorded by name and the batch still completes. A
+  class where twenty-nine of thirty sheets printed is far more useful than an
+  error page and nothing at all.
+- The archive path is written only after every candidate is accounted for, and a
+  run that printed nothing produces no archive. A partial ZIP opens cleanly and
+  looks complete, and a teacher would print it believing the class was covered.
+
+### Consequences
+- A second run reports 0 processed and N skipped. That is the honest answer, and
+  the UI has to present it as "these were already issued" rather than as a
+  failure, or officers will read a successful action as a broken one.
+- Progress counts skipped candidates as done, because they are genuinely dealt
+  with. Counting them as outstanding would leave a batch looking permanently
+  stuck for a class that was mostly issued already.
+- Entries are named `<reg_no>-<code>.pdf` so sheets come off the printer in a
+  usable order and a candidate can be found without opening thirty files.
+- `test_running_twice_skips_candidates_who_already_have_a_sheet` asserts the
+  codes are byte for byte unchanged after a second run, which is the actual
+  requirement. Verified to fail when the skip logic is disabled.
+
+### A separate trap worth recording
+
+A long-running `queue:work` holds an autoloader snapshot from when it started, so
+after `composer require` it keeps using the old class map until restarted. The
+symptom is genuinely misleading: the HTTP request returns 202, the batch row is
+created, and then every candidate fails *inside the worker* with a class-not-found
+error, while the identical code works in tests and in tinker. Answer sheet batch
+printing hit this exactly. The README now says to restart the worker after any
+Composer change, and to suspect it first for that symptom.

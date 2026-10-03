@@ -170,6 +170,22 @@ class Script extends Model
         return $this->hasMany(ScriptAnswer::class)->orderBy('question_number');
     }
 
+    /**
+     * Every sheet ever issued for this script, newest first, including the ones
+     * a reissue superseded. The history is the point (SHT-06), so this is not
+     * filtered to the current sheet; use `currentSheet` for that.
+     */
+    public function sheets(): HasMany
+    {
+        return $this->hasMany(ScriptSheet::class)->orderByDesc('id');
+    }
+
+    /** The one sheet a candidate should be using now, if any. */
+    public function currentSheet(): ?ScriptSheet
+    {
+        return $this->sheets->firstWhere('invalidated_at', null);
+    }
+
     public function markEvents(): HasMany
     {
         return $this->hasMany(MarkEvent::class);

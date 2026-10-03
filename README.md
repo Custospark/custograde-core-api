@@ -24,6 +24,28 @@ php artisan queue:work --tries=1 --timeout=600 --sleep=1
 .venv/Scripts/python.exe -m uvicorn app.api.server:app --host 127.0.0.1 --port 8100
 ```
 
+### Restart the worker after installing a Composer package
+
+`php artisan queue:work` is a long-running process, so it holds a snapshot of the
+autoloader from when it started. Install a package and the worker keeps using the
+old map until it is restarted.
+
+The symptom is confusing because the web request succeeds and only the queued
+work fails. Answer sheet batch printing showed it clearly: `POST /sheets/batch`
+returned 202, the batch row appeared, and then every candidate failed inside the
+worker with `Class "..." not found`, while the identical code worked perfectly in
+tests and in `artisan tinker`. Both were the same stale worker.
+
+So after `composer require` or `composer dump-autoload`:
+
+```bash
+# Ctrl-C the running worker, then
+php artisan queue:work --tries=1 --timeout=600 --sleep=1
+```
+
+If a queued job fails with a "class not found" that you can load fine in tinker,
+this is the cause before anything else.
+
 ### Why the queue worker is called out explicitly
 
 The end-to-end check hit this and it is worth knowing about. With Laravel running
