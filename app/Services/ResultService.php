@@ -41,6 +41,16 @@ class ResultService
         $compiled = 0;
         $skipped = [];
 
+        // A result with no grade and no pass mark is not a finished result, it is
+        // a number waiting for a decision. Saying so here is the difference
+        // between an examinations officer noticing and a parent discovering it.
+        if ($scheme === null) {
+            throw ValidationException::withMessages([
+                'grading_scheme_id' => 'This examination has no grading scheme, so marks cannot be graded yet. '
+                    . 'Choose a grading scheme for the paper, then compile again.',
+            ]);
+        }
+
         DB::transaction(function () use ($exam, $actor, $scheme, $locked, &$compiled, &$skipped): void {
             foreach ($locked as $script) {
                 $result = $this->compileOne($actor, $exam, $script, $scheme);
@@ -226,14 +236,20 @@ class ResultService
 
         $percentages = $results->pluck('percentage')->filter(fn ($v): bool => $v !== null)->sort()->values();
 
-        $mean = round($percentages->avg(), 2);
-        $median = $percentages->isEmpty()
-            ? 0.0
-            : (float) ($percentages->count() % 2 === 0
-                ? ($percentages->middle($percentages->count() / 2 - 1) + $percentages->middle($percentages->count() / 2)) / 2
-                : $percentages->middle($percentages->count() / 2));
+        $mean = $percentages->isEmpty() ? 0.0 : round((float) $percentages->avg(), 2);
 
-        // Population standard deviation, which is what a class of one cohort is.
+        // median() on a collection takes a key, not a position, so the
+        // middle value is taken by index on the sorted, re-indexed list.
+        $median = 0.0;
+        if ($percentages->isNotEmpty()) {
+            $count = $percentages->count();
+            $median = $count % 2 === 0
+                ? ((float) $percentages->get((int) ($count / 2) - 1) + (float) $percentages->get((int) ($count / 2))) / 2
+                : (float) $percentages->get((int) floor($count / 2));
+        }
+        $median = round($median, 2);
+
+        // Population standard deviation, which is what a single cohort is.
         $variance = $percentages->count() > 0
             ? $percentages->reduce(function (float $carry, float $value) use ($mean): float {
                 return $carry + (($value - $mean) ** 2);
@@ -250,16 +266,13 @@ class ResultService
             'std_dev' => round(sqrt($variance), 2),
             'min' => (float) $percentages->min(),
             'max' => (float) $percentages->max(),
-            'pass_rate' => percent($results->where('is_pass', true)->count() / max(1, $results->count())),
+            'pass_rate' => (int) round(
+                ($results->where('is_pass', true)->count() / max(1, $results->count())) * 100
+            ),
             'grade_distribution' => $results->whereNotNull('grade')->groupBy('grade')
                 ->map(fn ($group) => $group->count())
                 ->sortDesc()
                 ->all(),
         ];
-    }
-
-    private function percent(float $ratio): int
-    {
-        return (int) round($ratio * 100);
     }
 }

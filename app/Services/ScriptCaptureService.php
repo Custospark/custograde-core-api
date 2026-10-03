@@ -108,6 +108,12 @@ class ScriptCaptureService
                 'size_bytes' => strlen($bytes),
                 'page_count' => max(1, (int) ($meta['page_number'] ?? 1)),
                 'expected_page_count' => $expectedPages,
+                // MRK-01: the denominator comes from the paper, not from the
+                // marks, so a teacher can see "0 of 13" from the moment the
+                // script is captured. Leaving it at zero until the first mark
+                // was decided made an untouched paper look like an empty one.
+                'total_mark' => 0,
+                'max_mark' => $this->paperMaxMark($exam),
                 'created_by' => $actor->id,
                 'updated_by' => $actor->id,
             ]));
@@ -205,6 +211,23 @@ class ScriptCaptureService
         }
 
         return $studentId;
+    }
+
+    /**
+     * The total the paper can award, so progress is readable before any mark
+     * exists. Recomputed on capture rather than trusted, because a question can
+     * be added or removed between two scans of the same paper.
+     */
+    private function paperMaxMark(Exam $exam): float
+    {
+        $total = (float) $exam->questions()->sum('max_mark');
+
+        $exam->update([
+            'total_marks' => (int) round($total),
+            'question_count' => $exam->questions()->count(),
+        ]);
+
+        return round($total, 2);
     }
 
     /**

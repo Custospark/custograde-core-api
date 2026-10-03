@@ -25,33 +25,33 @@ Route::middleware('auth:sanctum')->group(function () {
     // Scripts for an examination, newest first.
     Route::get('exams/{examId}/scripts', [ScriptController::class, 'index']);
     Route::post('exams/{examId}/scripts', [ScriptController::class, 'store'])
-        ->middleware('throttle:30,1');
+        ->middleware('limit:uploads');
 
     // The review workspace.
     Route::get('scripts/{id}', [ScriptController::class, 'show']);
     // The scan itself, as a short-lived signed URL rather than a stored path.
     Route::get('scripts/{id}/image', [ScriptController::class, 'image']);
     Route::post('scripts/{id}/reprocess', [ScriptController::class, 'reprocess'])
-        ->middleware('throttle:10,1');
+        ->middleware('limit:results');
 
     // The only route that writes a mark. Every other mark in the system is a
     // proposal until it passes through here with an authenticated person.
     Route::post('scripts/{id}/answers/{answer}/mark', [ScriptController::class, 'decideMark'])
-        ->middleware('throttle:120,1');
+        ->middleware('limit:marks');
     Route::put('scripts/{id}/answers/{answer}/transcription', [ScriptController::class, 'correctTranscription'])
-        ->middleware('throttle:120,1');
+        ->middleware('limit:marks');
 
-    Route::post('scripts/{id}/lock', [ScriptController::class, 'lock'])->middleware('throttle:20,1');
-    Route::post('scripts/{id}/unlock', [ScriptController::class, 'unlock'])->middleware('throttle:20,1');
-    Route::post('scripts/{id}/flag', [ScriptController::class, 'flag'])->middleware('throttle:20,1');
+    Route::post('scripts/{id}/lock', [ScriptController::class, 'lock'])->middleware('limit:approvals');
+    Route::post('scripts/{id}/unlock', [ScriptController::class, 'unlock'])->middleware('limit:approvals');
+    Route::post('scripts/{id}/flag', [ScriptController::class, 'flag'])->middleware('limit:approvals');
 
     // Results.
     Route::get('exams/{examId}/results', [ResultController::class, 'index']);
     Route::get('exams/{examId}/results/statistics', [ResultController::class, 'statistics']);
     Route::post('exams/{examId}/results/compile', [ResultController::class, 'compile'])
-        ->middleware('throttle:10,1');
+        ->middleware('limit:results');
     Route::post('exams/{examId}/results/release', [ResultController::class, 'release'])
-        ->middleware('throttle:10,1');
+        ->middleware('limit:results');
     Route::post('exams/{examId}/results/withhold', [ResultController::class, 'withhold'])
-        ->middleware('throttle:10,1');
+        ->middleware('limit:results');
 });

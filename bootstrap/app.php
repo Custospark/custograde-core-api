@@ -11,8 +11,14 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
-    ->withMiddleware(function (Middleware $middleware): void {
-        //
+->withMiddleware(function (Middleware $middleware): void {
+        // `limit:` resolves a named rate limiter, so each marking action has its
+        // own allowance. The inline `throttle:10,1` form shares one counter per
+        // user across every route, which would make a teacher throttling
+        // themselves out of approving the scripts they just uploaded.
+        $middleware->alias([
+            'limit' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
