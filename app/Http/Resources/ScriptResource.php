@@ -2,8 +2,10 @@
 
 namespace App\Http\Resources;
 
+use App\Models\ExamQuestion;
 use App\Models\Script;
 use App\Models\ScriptAnswer;
+use App\Services\OmrReadingService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -21,6 +23,48 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class ScriptResource extends JsonResource
 {
     public static $wrap = null;
+
+    /**
+     * The objective readings for this script, or an empty list when there are
+     * none to give.
+     *
+     * Kept out of toArray so the cost is only paid for a script that actually has
+     * a scan, and so an unreadable scan cannot take down the whole payload: a
+     * marker still needs the handwriting if the bubbles cannot be read.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function omrReadings(): array
+    {
+        $script = $this->resource;
+
+        if (! $script instanceof Script || $script->original_path === null) {
+            return [];
+        }
+
+        $readings = app(OmrReadingService::class)->forScript($script);
+
+        if ($readings === []) {
+            return [];
+        }
+
+        // Returned as a list with the question number attached, because a marker
+        // reads "question 7" and not "question id 412".
+        $numbers = ExamQuestion::query()
+            ->where('exam_id', $script->exam_id)
+            ->pluck('number', 'id');
+
+        return collect($readings)
+            ->map(fn (array $reading): array => [
+                'question_id' => $reading['question_id'],
+                'number' => $numbers[$reading['question_id']] ?? null,
+                'status' => $reading['status'],
+                'option' => $reading['option'],
+                'confidence' => $reading['confidence'],
+            ])
+            ->values()
+            ->all();
+    }
 
     /**
      * @return array<string, mixed>
@@ -47,6 +91,16 @@ class ScriptResource extends JsonResource
             ]),
             'student_id' => $this->when(! $blind && ! $flagged, fn () => $this->student_id),
             'needs_identification' => $this->student_id === null,
+
+            // What the objective section says the candidate filled in. A reading,
+            // not a mark: the marker still confirms it, the same as a
+            // transcription (BR-02). Absent entirely when the exam has no bubbled
+            // questions or the scan has not been read, so the client can tell
+            // "nothing to read" from "read and found nothing marked".
+            'omr' => $this->when(
+                $this->original_path !== null,
+                fn (): array => $this->omrReadings()
+            ),
 
             'original_name' => $this->original_name,
             'mime_type' => $this->mime_type,

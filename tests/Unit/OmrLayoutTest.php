@@ -19,7 +19,8 @@ final class OmrLayoutTest extends TestCase
         $question->id = $id;
         $question->number = $number;
         $question->kind = ExamQuestion::KIND_MULTIPLE_CHOICE;
-        $question->options = ['options' => $options];
+        // The shape the API actually stores: a flat list of option labels.
+        $question->options = $options;
 
         return $question;
     }
