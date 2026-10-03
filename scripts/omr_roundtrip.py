@@ -69,6 +69,14 @@ def main() -> int:
     findings = check_blank(image, layout)
     findings += check_marked(image, layout, marked)
 
+    # OMR-06 and OMR-07, on the printed sheet rather than a drawn one.
+    first_question = next(iter(marked))
+    findings += check_two_marks(image.copy(), layout, first_question)
+    print("checked OMR-06, two bubbles filled on one question")
+
+    findings += check_eraser_ghost(image.copy(), layout, first_question)
+    print("checked OMR-07, a bubble filled then erased")
+
     for line in findings:
         print(f"  FAIL {line}")
 
@@ -130,16 +138,99 @@ def rasterize(pdf_path: Path, page_index: int):
     return pdf[page_index].render(scale=DPI / 72).to_pil().convert("RGB")
 
 
-def fill(image, cx_mm: float, cy_mm: float, diameter_mm: float) -> None:
-    """Darken a disc, the way a pencil does: not perfectly, not centrally."""
+def fill(image, cx_mm: float, cy_mm: float, diameter_mm: float, shade: int = 40) -> None:
+    """Darken a disc, the way a pencil does: not perfectly, not centrally.
+
+    `shade` is the grey left behind. A pencil is near 40; an eraser that has been
+    over the same bubble leaves something much lighter, and the reader is supposed
+    to treat the two differently.
+    """
     from PIL import ImageDraw
 
     radius = px(diameter_mm / 2) * 0.8
     draw = ImageDraw.Draw(image)
     draw.ellipse(
         [px(cx_mm) - radius, px(cy_mm) - radius, px(cx_mm) + radius, px(cy_mm) + radius],
-        fill=40,
+        fill=shade,
     )
+
+
+def ask_reader(image, layout: dict, page: int = 1) -> dict:
+    """Run the real reader over an image and return what it says, per question."""
+    path = Path(tempfile.gettempdir()) / "omr_rt_read.png"
+    image.save(path)
+
+    return json.loads(
+        PHP(
+            r"""
+            $s = omr_fixture_script();
+            $layout = App\Services\OmrLayout::forQuestions($s->exam->questions()->get());
+            $img = imagecreatefrompng(getenv('CUSTOGRADE_MARKED'));
+            $reader = new App\Services\BubbleReader;
+            $out = [];
+            foreach ($reader->readPage($img, $layout, 1, (int) getenv('CUSTOGRADE_DPI')) as $id => $r) {
+                $out[$id] = $r['status'] . ':' . ($r['option'] ?? '-');
+            }
+            echo json_encode($out);
+            """,
+            env={"CUSTOGRADE_MARKED": str(path), "CUSTOGRADE_DPI": str(DPI)},
+        )
+    )
+
+
+def check_two_marks(image, layout: dict, question_id: str) -> list[str]:
+    """OMR-06: a candidate who changes their mind without erasing.
+
+    Must not resolve to the darker of the two. Picking one would be a coin toss
+    presented as a measurement.
+    """
+    letters = list(layout[question_id]["options"])
+    first, second = letters[0], letters[1]
+
+    for letter in (first, second):
+        point = layout[question_id]["options"][letter]
+        fill(image, point["x"], point["y"], 4.2)
+
+    reading = ask_reader(image, layout).get(question_id)
+    print(f"  q{question_id} filled on both {first} and {second}: reader said {reading}")
+
+    if reading is not None and reading.startswith("marked"):
+        return [
+            f"q{question_id} has {first} and {second} both filled and the reader "
+            f"answered {reading.split(':')[1]} instead of refusing"
+        ]
+
+    return []
+
+
+def check_eraser_ghost(image, layout: dict, question_id: str) -> list[str]:
+    """OMR-07: a bubble filled, erased, and something else chosen.
+
+    The ghost must not read as an answer. It is also deliberately not required to
+    read as blank: a light graphite residue is indistinguishable from a candidate
+    who shaded a bubble too faintly to call, and reporting those as blank would
+    invent an unanswered question. Ambiguous is the honest answer, and it costs a
+    marker one glance at a paper they were going to look at anyway.
+    """
+    letters = list(layout[question_id]["options"])
+    ghost, chosen = letters[0], letters[1]
+
+    point = layout[question_id]["options"][ghost]
+    fill(image, point["x"], point["y"], 4.2, shade=165)
+
+    answer = layout[question_id]["options"][chosen]
+    fill(image, answer["x"], answer["y"], 4.2)
+
+    reading = ask_reader(image, layout).get(question_id)
+    print(f"  q{question_id} erased on {ghost}, answered {chosen}: reader said {reading}")
+
+    if reading is not None and reading.startswith("marked:") and reading != f"marked:{chosen}":
+        return [
+            f"q{question_id} was erased on {ghost} and answered {chosen}, "
+            f"but the reader said {reading}. Graphite left behind is not an answer."
+        ]
+
+    return []
 
 
 def interior_is_light(image, cx_mm: float, cy_mm: float) -> bool:
