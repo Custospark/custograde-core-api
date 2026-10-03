@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Jobs\ProcessScriptJob;
+use App\Jobs\ResolveIdentificationJob;
 use App\Models\Exam;
 use App\Models\Script;
 use App\Models\Student;
@@ -178,6 +179,12 @@ class ScriptCaptureService
                 'status' => Script::STATUS_UPLOADED,
                 'flag_note' => 'This script was uploaded without a candidate, so it needs to be matched to one before it can be marked.',
             ]);
+
+            // IDN-08: one attempt was made inline for the sake of the upload
+            // waiting on it. This is where the slower, deeper search runs, so a
+            // sheet fed in upside down or from another template still reaches
+            // its candidate without an officer having to do it by hand.
+            ResolveIdentificationJob::dispatch($script->id);
         }
 
         // Queued rather than run inline: reading a page takes 13 seconds and
